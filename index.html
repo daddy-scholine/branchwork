@@ -1,0 +1,1508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2E7748">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Branchwork">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script>
+/* Branchwork local mode: stands in for claude.ai's storage so the app runs on its own, saving to this device. */
+(function () {
+  window.BW_LOCAL = true;
+  const KEY = "bwdb:";
+  const read = p => { try { const v = localStorage.getItem(KEY + p); return v ? JSON.parse(v) : null; } catch { return null; } };
+  const write = (p, v) => { try { if (v == null) localStorage.removeItem(KEY + p); else localStorage.setItem(KEY + p, JSON.stringify(v)); return true; } catch (e) { return e; } };
+  const listeners = new Set();
+  const notify = () => listeners.forEach(fn => { try { fn(); } catch {} });
+  const meta = { fromCache: false, hasPendingWrites: false };
+  const snap = (path) => { const d = read(path); const id = path.split("/").pop(); return { id, exists: !!d, data: () => d ? JSON.parse(JSON.stringify(d)) : undefined, metadata: meta }; };
+  const merge = (a, b) => { const o = { ...(a || {}) }; for (const k in b) { const v = b[k]; o[k] = v && typeof v === "object" && !Array.isArray(v) ? merge(o[k], v) : v; } return o; };
+  const err = (code, message) => Object.assign(new Error(message), { code, message });
+  const gid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  function docRef(path) {
+    return {
+      id: path.split("/").pop(), path,
+      get: async () => snap(path),
+      set: async d => { const r = write(path, d); if (r !== true) throw err("quota_exceeded", "This device's storage is full"); notify(); },
+      update: async d => { const cur = read(path); if (!cur) throw err("invalid_argument", "Document does not exist"); const r = write(path, merge(cur, d)); if (r !== true) throw err("quota_exceeded", "This device's storage is full"); notify(); },
+      delete: async () => { write(path, null); notify(); },
+      onSnapshot(next) { let last; const fn = () => { const s = snap(path); const k = JSON.stringify(s.exists ? s.data() : null); if (k !== last) { last = k; next(s); } }; listeners.add(fn); setTimeout(fn, 0); return () => listeners.delete(fn); },
+      collection: sub => collRef(path + "/" + sub),
+    };
+  }
+  function query(path, opts) {
+    const run = () => { const pre = KEY + path + "/"; const depth = path.split("/").length + 1; const docs = [];
+      try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(pre) && k.slice(KEY.length).split("/").length === depth) docs.push(snap(k.slice(KEY.length))); } } catch {}
+      if (opts.order) { const [f, dir] = opts.order; docs.sort((a, b) => { const x = a.data()[f], y = b.data()[f]; return (x > y ? 1 : x < y ? -1 : 0) * (dir === "desc" ? -1 : 1); }); }
+      const out = opts.limit ? docs.slice(0, opts.limit) : docs;
+      return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: meta }; };
+    return {
+      where: () => query(path, opts),
+      orderBy: (f, dir) => query(path, { ...opts, order: [f, dir || "asc"] }),
+      limit: n => query(path, { ...opts, limit: n }),
+      get: async () => run(),
+      onSnapshot(next) { let last; const fn = () => { const r = run(); const k = JSON.stringify(r.docs.map(d => [d.id, d.data()])); if (k !== last) { last = k; next(r); } }; listeners.add(fn); setTimeout(fn, 0); return () => listeners.delete(fn); },
+    };
+  }
+  function collRef(path) { const q = query(path, {}); return { ...q, path, doc: id => docRef(path + "/" + (id || gid())), add: async d => { const r = docRef(path + "/" + gid()); await r.set(d); return r; } }; }
+  const db = Object.freeze({ doc: docRef, collection: collRef });
+  const ME = "me";
+  const user = Object.freeze({
+    id: async () => ME, isOwner: async () => true, canEdit: async () => true, can: async () => true,
+    me: async () => ({ id: ME, name: "You", avatarUrl: "", color: "", email: null, isOwner: true, canEdit: true }),
+    profiles: async ids => { const o = {}; [].concat(ids).forEach(i => o[i] = { id: i, name: i === ME ? (localStorage.getItem("bw:name") ? JSON.parse(localStorage.getItem("bw:name")) : "You") : "", avatarUrl: "", color: "", email: null, isMe: i === ME, guest: false }); return o; },
+    name: async () => "You", avatarUrl: async () => null, search: async () => [],
+  });
+  const assets = Object.freeze({
+    async upload(blob) {
+      if (!/^image\//.test(blob.type)) throw err("unsupported_type", "Only photos can be saved on this device");
+      const url = URL.createObjectURL(blob); const img = new Image();
+      await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = url; });
+      const s = Math.min(1, 1000 / Math.max(img.width, img.height)); const c = document.createElement("canvas"); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      const data = c.toDataURL("image/jpeg", 0.72); return { id: gid(), url: data, sizeBytes: data.length, contentType: "image/jpeg" };
+    },
+    list: async () => ({ assets: [], usage: { files: 0, bytes: 0, maxFiles: 0, maxBytes: 0 } }), delete: async () => ({ deleted: true }),
+  });
+  const downloads = Object.freeze({
+    async save({ filename, data }) { const blob = data instanceof Blob ? data : new Blob([data], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); return { status: "saved" }; },
+  });
+  const caps = { db, user, assets, downloads };
+  window.claude = Object.freeze({ use: name => Promise.resolve(caps[name] || null) });
+  try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {}
+  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); window.BW_INSTALL = e; });
+  if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+})();
+
+</script>
+</head>
+<body>
+<title>Branchwork</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: app shell. Wide screens get a left rail; phones get a bottom tab bar. Content column caps at 1000px. */
+:root{
+  --bg:#F2F4EF; --surface:#FFFFFF; --surface2:#E8ECE4; --line:#D5DCD0; --fg:#17201A; --muted:#5C695F;
+  --accent:#2E7748; --accent-ink:#FFFFFF; --cell0:#E2E8DE; --danger:#B13E2D; --warn:#A86E12;
+  --d1:#2E7748; --d2:#4357C7; --d3:#A86E12; --d4:#B53B70; --d5:#1A7F7F; --d6:#A44D29;
+  --shadow:0 10px 30px rgba(20,35,25,.14); --grid:#E1E7DC; --grid-dot:#C3CCBD;
+  --tissue:#F7E6E3; --wall:#D69D99; --mucus:#CDBF6A; --mucus-old:#8F7E2A; --air:#EAF5FB; --airflow:#3C93C8; --alv-on:#EC8496; --alv-off:#D6CFCB;
+  --f-display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif;
+  --f-body:"Figtree",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0F1411; --surface:#171E19; --surface2:#212923; --line:#2D3830; --fg:#E5EBE4; --muted:#97A59A;
+  --accent:#5BBA7C; --accent-ink:#0B180F; --cell0:#202822; --danger:#E46F5C; --warn:#E2A84B;
+  --d1:#5BBA7C; --d2:#8492F2; --d3:#E2A84B; --d4:#E67AA8; --d5:#4CC2C2; --d6:#E38B5F;
+  --shadow:0 10px 30px rgba(0,0,0,.5); --grid:#222C25; --grid-dot:#3A463E;
+  --tissue:#2B2022; --wall:#8E5B5B; --mucus:#9C9248; --mucus-old:#6A5F1E; --air:#1F3340; --airflow:#7CC4EE; --alv-on:#F08FA2; --alv-off:#4A4245; color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg:#0F1411; --surface:#171E19; --surface2:#212923; --line:#2D3830; --fg:#E5EBE4; --muted:#97A59A;
+  --accent:#5BBA7C; --accent-ink:#0B180F; --cell0:#202822; --danger:#E46F5C; --warn:#E2A84B;
+  --d1:#5BBA7C; --d2:#8492F2; --d3:#E2A84B; --d4:#E67AA8; --d5:#4CC2C2; --d6:#E38B5F;
+  --shadow:0 10px 30px rgba(0,0,0,.5); --grid:#222C25; --grid-dot:#3A463E;
+  --tissue:#2B2022; --wall:#8E5B5B; --mucus:#9C9248; --mucus-old:#6A5F1E; --air:#1F3340; --airflow:#7CC4EE; --alv-on:#F08FA2; --alv-off:#4A4245; color-scheme:dark;}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+h1,h2,h3{font-family:var(--f-display);font-weight:700;margin:0;text-wrap:balance;letter-spacing:-.01em}
+h1{font-size:1.7rem} h2{font-size:1.25rem} h3{font-size:1.02rem}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+.lbl{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+
+/* shell */
+.shell{display:flex;min-height:100%}
+.rail{display:none}
+.main{flex:1;min-width:0;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:18px 96px}
+.col{max-width:1000px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:6px max(8px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}
+.tab{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:.7rem;color:var(--muted);padding:4px 8px;border-radius:8px;min-width:56px}
+.tab svg{width:22px;height:22px}
+.tab[aria-current="page"]{color:var(--accent);font-weight:700}
+@media (min-width:900px){
+  .tabbar{display:none}
+  .rail{display:flex;flex-direction:column;gap:4px;width:210px;flex:none;padding:22px 12px;border-right:1px solid var(--line);position:sticky;top:0;height:100vh;background:var(--surface)}
+  .rail .brand{font-family:var(--f-display);font-size:1.35rem;font-weight:700;padding:4px 10px 18px;display:flex;gap:8px;align-items:center}
+  .rail .tab{flex-direction:row;font-size:.95rem;gap:10px;padding:9px 10px;justify-content:flex-start}
+  .main{padding-block:28px 40px}
+}
+.topbar{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.topbar .sub{color:var(--muted);font-size:.9rem}
+
+/* buttons, chips */
+.btn{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:8px 14px;font-weight:600;font-size:.9rem;border:1px solid var(--line);background:var(--surface)}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--line))}
+.btn.small{padding:5px 10px;font-size:.8rem}
+.btn svg{width:16px;height:16px}
+.icon-btn{width:34px;height:34px;border-radius:9px;display:inline-grid;place-items:center;color:var(--muted)}
+.icon-btn:hover{background:var(--surface2);color:var(--fg)}
+.icon-btn svg{width:18px;height:18px}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--surface2);color:var(--muted);white-space:nowrap}
+.chip.ex{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.chip.late{background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger)}
+.chip.ok{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.seg{display:inline-flex;background:var(--surface2);border-radius:999px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{padding:6px 12px;border-radius:999px;font-size:.85rem;font-weight:600;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+.banner{border-radius:12px;padding:12px 14px;background:color-mix(in srgb,var(--warn) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--warn) 35%,var(--line));font-size:.9rem}
+.empty{text-align:center;padding:36px 16px;display:flex;flex-direction:column;gap:10px;align-items:center}
+.empty p{max-width:46ch;margin:0;color:var(--muted)}
+
+/* tree */
+.tree{display:flex;flex-direction:column}
+.dom{border-radius:14px;background:var(--surface);border:1px solid var(--line);overflow:hidden}
+.dom + .dom{margin-top:12px}
+.dom-head{display:flex;align-items:center;gap:10px;padding:12px 10px 12px 12px;border-left:5px solid var(--dc)}
+.dom-head .t{font-family:var(--f-display);font-weight:700;font-size:1.1rem;flex:1;min-width:0;cursor:pointer}
+.row{display:flex;align-items:center;gap:8px;padding:7px 8px 7px calc(10px + var(--depth) * 20px);border-top:1px solid var(--line);position:relative}
+.row::before{content:"";position:absolute;left:calc(var(--depth) * 20px - 2px);top:0;bottom:0;width:1px;background:var(--line)}
+.row.done .rt{color:var(--muted);text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--muted) 60%,transparent)}
+.rt{flex:1;min-width:0;cursor:pointer;display:flex;flex-direction:column}
+.rt b{font-weight:600;overflow-wrap:anywhere}
+.rt small{color:var(--muted);font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}
+.meta:empty{display:none}
+.chev{width:24px;height:24px;display:grid;place-items:center;color:var(--muted);border-radius:6px;flex:none}
+.chev svg{width:14px;height:14px;transition:transform .15s}
+.chev[aria-expanded="true"] svg{transform:rotate(90deg)}
+.chev.blank{visibility:hidden}
+.cb{width:22px;height:22px;border-radius:7px;border:2px solid var(--muted);display:grid;place-items:center;flex:none;color:var(--accent-ink)}
+.cb svg{width:14px;height:14px;opacity:0}
+.cb[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+.cb[aria-checked="true"] svg{opacity:1}
+.cb[aria-checked="mixed"]{border-color:var(--accent);background:linear-gradient(var(--accent),var(--accent)) center/10px 2px no-repeat}
+.ring{flex:none}
+.ring text{font-family:var(--f-mono);font-size:9px;fill:var(--fg)}
+.row-actions{display:flex;gap:0;flex:none}
+@media (max-width:520px){ .row{padding-left:calc(6px + var(--depth) * 14px)} .row::before{left:calc(var(--depth) * 14px - 2px)} }
+
+/* map */
+.mapwrap{overflow-x:auto;border-radius:14px;border:1px solid var(--line);background:var(--surface)}
+.mapwrap svg text{font-family:var(--f-body);font-size:12px;fill:var(--fg)}
+.mapwrap svg .mnode{cursor:pointer}
+
+/* today */
+.group{display:flex;flex-direction:column;gap:6px}
+.trow{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.trow .rt small{white-space:normal}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dc);flex:none;display:inline-block}
+
+/* sheet */
+.scrim{position:fixed;inset:0;background:rgba(10,18,12,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+@media (min-width:700px){.scrim{align-items:center}}
+.sheet{background:var(--surface);width:100%;max-width:560px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:18px max(18px,env(safe-area-inset-right,0px)) calc(18px + env(safe-area-inset-bottom,0px)) max(18px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow)}
+@media (min-width:700px){.sheet{border-radius:18px}}
+.field{display:flex;flex-direction:column;gap:5px}
+.field input[type=text],.field input[type=date],.field input[type=number],.field input[type=datetime-local],.field input[type=url],.field textarea,.field select,.inp{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 11px;width:100%;min-width:0}
+.field textarea{min-height:90px;resize:vertical}
+.frow{display:flex;gap:12px;flex-wrap:wrap}
+.frow > *{flex:1 1 160px;min-width:0}
+.check{display:flex;gap:8px;align-items:center;font-size:.92rem}
+.sheet-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between}
+.sheet-actions > div{display:flex;gap:8px;flex-wrap:wrap}
+.swatches{display:flex;gap:8px}
+.sw{width:28px;height:28px;border-radius:50%;background:var(--c);border:3px solid transparent}
+.sw[aria-pressed="true"]{border-color:var(--fg)}
+
+/* focus */
+.focus{position:fixed;inset:0;z-index:40;background:var(--bg);overflow:auto;padding:calc(16px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.focus .col{max-width:760px}
+.crumbs{display:flex;gap:6px;flex-wrap:wrap;font-size:.85rem;color:var(--muted)}
+.crumbs span + span::before{content:"›";margin-right:6px}
+.fhero{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.fhero h1{font-size:2rem}
+.next{border:2px solid var(--accent);border-radius:16px;padding:16px;display:flex;gap:12px;align-items:center;background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
+.timer{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.timer .clock{font-family:var(--f-mono);font-size:2.6rem;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+
+/* dashboard */
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
+.tiles{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px}
+.tile .v{font-family:var(--f-display);font-size:1.9rem;font-weight:700;font-variant-numeric:tabular-nums}
+.tile .v small{font-size:.9rem;color:var(--muted);font-weight:500;margin-left:3px}
+.hm-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.hm-ctrl{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.hm-ctrl select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.cal .wd{font-size:.7rem;color:var(--muted);text-align:center;font-weight:600}
+.cell{height:clamp(40px,10vw,62px);max-width:100%;border-radius:8px;background:var(--cell0);display:flex;align-items:flex-start;justify-content:flex-start;padding:4px 6px;font-size:.72rem;font-family:var(--f-mono);color:var(--muted);position:relative}
+.cell.l1{background:color-mix(in srgb,var(--accent) 28%,var(--cell0))}
+.cell.l2{background:color-mix(in srgb,var(--accent) 52%,var(--cell0));color:var(--fg)}
+.cell.l3{background:color-mix(in srgb,var(--accent) 76%,var(--cell0));color:var(--accent-ink)}
+.cell.l4{background:var(--accent);color:var(--accent-ink)}
+.cell.today{outline:2px solid var(--fg);outline-offset:1px}
+.cell.sel{box-shadow:inset 0 0 0 2px var(--fg)}
+.cell.pad{background:transparent}
+.cell .n{position:absolute;right:6px;bottom:4px;font-weight:700}
+.legend{display:flex;gap:4px;align-items:center;font-size:.72rem;color:var(--muted)}
+.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.year{overflow-x:auto;padding-bottom:4px}
+.year .yg{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,11px);grid-auto-columns:11px;gap:3px;width:max-content}
+.year .yc{border-radius:2px;background:var(--cell0)}
+.year .yc.l1{background:color-mix(in srgb,var(--accent) 28%,var(--cell0))}
+.year .yc.l2{background:color-mix(in srgb,var(--accent) 52%,var(--cell0))}
+.year .yc.l3{background:color-mix(in srgb,var(--accent) 76%,var(--cell0))}
+.year .yc.l4{background:var(--accent)}
+.year .yc.pad{background:transparent}
+.chart svg{width:100%;height:auto;display:block}
+.chart svg text{font-family:var(--f-mono);font-size:10px;fill:var(--muted)}
+.chart .gl{stroke:var(--line);stroke-width:1}
+.dlist{display:flex;flex-direction:column;gap:8px}
+.bar{height:10px;border-radius:999px;background:var(--surface2);overflow:hidden;position:relative}
+.bar > i{display:block;height:100%;border-radius:999px;background:var(--dc,var(--accent))}
+.ms{display:flex;flex-direction:column;gap:5px}
+.ms .track{height:12px;border-radius:999px;background:var(--surface2);position:relative}
+.ms .track i{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:var(--dc)}
+.ms .track b{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--fg)}
+.rings{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+.rcard{display:flex;gap:10px;align-items:center;padding:10px;border-radius:12px;background:var(--bg);border:1px solid var(--line);cursor:pointer;min-width:0}
+.rcard div{min-width:0}
+.rcard b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.daylist{margin-top:12px;display:flex;flex-direction:column;gap:6px;font-size:.9rem}
+
+/* battles */
+.blist{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,290px),1fr))}
+.bcard{display:flex;flex-direction:column;gap:10px;cursor:pointer}
+.bcard .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.lb{display:flex;flex-direction:column;gap:10px}
+.lbrow{display:grid;grid-template-columns:28px 34px 1fr auto;gap:10px;align-items:center}
+.av{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:.85rem;color:#fff;background:var(--c,var(--d2));flex:none}
+.av.sm{width:28px;height:28px;font-size:.75rem}
+.count{font-family:var(--f-mono);font-size:1.6rem}
+.chat{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow:auto}
+.msg{display:flex;gap:8px;align-items:flex-start}
+.msg .bub{background:var(--surface2);border-radius:12px;padding:7px 11px;font-size:.9rem;min-width:0;overflow-wrap:anywhere}
+.msg.me{flex-direction:row-reverse}
+.msg.me .bub{background:color-mix(in srgb,var(--accent) 18%,var(--surface))}
+.winner{display:flex;gap:10px;align-items:center;padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--warn) 16%,var(--surface));border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));font-weight:600}
+
+/* feed */
+.composer{display:flex;flex-direction:column;gap:10px}
+.composer textarea{border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:10px 12px;min-height:80px;width:100%;resize:vertical}
+.ctools{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.thumbs .th{width:72px;height:72px;border-radius:10px;background:var(--surface2);overflow:hidden;position:relative;display:grid;place-items:center;font-size:.7rem;color:var(--muted)}
+.thumbs .th img,.thumbs .th video{width:100%;height:100%;object-fit:cover}
+.post{display:flex;flex-direction:column;gap:10px}
+.phead{display:flex;gap:10px;align-items:center}
+.phead .who{flex:1;min-width:0}
+.phead .who b{display:block}
+.phead .who small{color:var(--muted);font-size:.78rem}
+.ptext{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.quote{font-family:var(--f-display);font-size:1.35rem;line-height:1.3;padding:20px 18px;border-radius:14px;background:color-mix(in srgb,var(--d2) 12%,var(--surface));border-left:5px solid var(--d2);white-space:pre-wrap;overflow-wrap:anywhere}
+.quote small{display:block;font-family:var(--f-body);font-size:.85rem;color:var(--muted);margin-top:8px}
+.media{display:grid;gap:6px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+.media img,.media video{width:100%;border-radius:12px;max-height:440px;object-fit:cover;background:var(--surface2)}
+.linkcard{display:flex;gap:12px;align-items:center;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--bg);text-decoration:none;color:inherit;min-width:0}
+.linkcard .pf{width:44px;height:44px;border-radius:11px;display:grid;place-items:center;color:#fff;font-weight:700;flex:none;font-size:.8rem;background:var(--c)}
+.linkcard div{min-width:0}
+.linkcard b{display:block}
+.linkcard small{color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.taskcard{padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--dc) 12%,var(--surface));border:1px solid color-mix(in srgb,var(--dc) 35%,var(--line));display:flex;gap:10px;align-items:center}
+.taskcard .cb{background:var(--dc);border-color:var(--dc)}
+.taskcard .cb svg{opacity:1}
+.pacts{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pacts .btn{padding:5px 10px;font-size:.8rem}
+.pacts .btn[aria-pressed="true"]{color:var(--d4);border-color:var(--d4)}
+.comments{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:10px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:999px;z-index:80;font-size:.9rem;font-weight:600;max-width:calc(100% - 32px)}
+@media (min-width:900px){.toast{bottom:28px}}
+/* map controls */
+.mapbox{position:relative}
+.mapwrap{max-height:70vh;overflow:auto}
+.mapwrap.gridbg{background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:24px 24px;background-attachment:local}
+.maptools{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2;flex-wrap:wrap;justify-content:flex-end}
+.maptools .icon-btn{background:var(--surface);border:1px solid var(--line);color:var(--fg)}
+.maptools .icon-btn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.mapbox.full{position:fixed;inset:0;z-index:45;background:var(--surface)}
+.mapbox.full .mapwrap{max-height:none;height:100%;border:0;border-radius:0;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+.mapbox.full .maptools{top:calc(10px + env(safe-area-inset-top,0px));right:calc(10px + env(safe-area-inset-right,0px))}
+.mtog{cursor:pointer}
+.mapbox .mapwrap{padding-top:52px;touch-action:pan-x pan-y}
+.mapwrap svg{transition:none}
+.mapbox.full .mapwrap{padding-top:calc(60px + env(safe-area-inset-top,0px))}
+.zlab{align-self:center;font-size:.75rem;min-width:38px;text-align:center;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 4px;color:var(--fg)}
+.maptools .icon-btn:disabled{opacity:.4;cursor:default}
+.mtog:hover rect,.mtog:focus-visible rect{fill:var(--surface2)}
+/* domain looks */
+.cover{display:block;width:100%;height:110px;object-fit:cover;background:var(--surface2)}
+.ringwrap{position:relative;display:inline-grid;place-items:center;flex:none}
+.ringwrap .ri{position:absolute;inset:0;display:grid;place-items:center;color:var(--dc)}
+.ringwrap .ri svg{width:18px;height:18px}
+.iconpick{display:flex;gap:6px;flex-wrap:wrap}
+.ipk{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);display:grid;place-items:center;color:var(--muted)}
+.ipk svg{width:20px;height:20px}
+.ipk[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+/* levels, badges, profile */
+.lvl-badge{width:56px;height:56px;border-radius:16px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-family:var(--f-display);font-weight:700;font-size:1.6rem;flex:none}
+.badges{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.badge{display:flex;gap:10px;align-items:center;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--bg);min-width:0}
+.badge .bi{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--accent-ink);flex:none}
+.badge .bi svg{width:18px;height:18px}
+.badge div{min-width:0}
+.badge b{display:block;font-size:.88rem}
+.badge small{display:block;color:var(--muted);font-size:.74rem;line-height:1.3}
+.badge.locked{opacity:.55}
+.badge.locked .bi{background:var(--surface2);color:var(--muted)}
+.profhead{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.av.lg{width:68px;height:68px;font-size:1.4rem}
+.av-btn{display:inline-flex;gap:10px;align-items:center;text-align:left;min-width:0}
+.av-btn .who{display:flex;flex-direction:column;min-width:0}
+.weekcard{border-radius:14px;padding:14px;background:color-mix(in srgb,var(--accent) 10%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line))}
+.wk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-top:8px}
+.wk-grid b{display:block;font-family:var(--f-display);font-size:1.35rem;overflow-wrap:anywhere}
+.wk-grid small{color:var(--muted);font-size:.76rem}
+.cell.frz{background:repeating-linear-gradient(45deg,var(--cell0) 0 4px,color-mix(in srgb,var(--d2) 30%,var(--cell0)) 4px 8px)}
+.themes{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+.thm{display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:10px;border:1px solid var(--line);text-align:left}
+.thm .sw{width:22px;height:22px;flex:none;border:0}
+.thm[aria-pressed="true"]{border-color:var(--fg);border-width:2px}
+.thm:disabled{opacity:.5;cursor:not-allowed}
+.thm small{color:var(--muted);font-size:.72rem;margin-left:auto}
+.tile .sub2{font-size:.74rem;color:var(--muted);margin-top:2px}
+.mapwrap.dotbg{background-image:radial-gradient(var(--grid-dot) 1.3px,transparent 1.6px);background-size:20px 20px;background-attachment:local}
+.lungwrap svg{display:block;margin:0 auto}
+.lungwrap text{pointer-events:none;font-family:var(--f-body);fill:var(--fg);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
+.lungwrap .hit,.lungwrap .alvg,.lungwrap .ltog{cursor:pointer}
+.breathe{transform-box:fill-box;transform-origin:50% 30%;animation:breathe 4.2s ease-in-out infinite}
+@keyframes breathe{0%,100%{transform:scale(1)}45%{transform:scale(calc(1 + var(--amp)))}}
+.flow{animation:flow 1.3s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-22}}
+.monitor{display:flex;gap:16px;align-items:center;flex-wrap:wrap;background:#0E1714;color:#D8F3E6;border-radius:14px;padding:12px 16px;border:1px solid #23362D}
+.monitor .lbl{color:#7FB89B}
+.monitor .spo{font-family:var(--f-mono);font-size:2.4rem;line-height:1;color:var(--spoc,#7CE0F0);font-variant-numeric:tabular-nums}
+.monitor .spo small{font-size:1rem;margin-left:2px}
+.monitor svg{flex:1;min-width:120px;height:44px}
+.monitor .pleth{stroke:var(--spoc,#7CE0F0);stroke-width:2;fill:none;stroke-dasharray:420;animation:pleth 2.4s linear infinite}
+@keyframes pleth{from{stroke-dashoffset:420}to{stroke-dashoffset:0}}
+.legend2{display:flex;gap:12px;flex-wrap:wrap;font-size:.8rem;color:var(--muted);align-items:center}
+.legend2 i{display:inline-block;width:14px;height:8px;border-radius:4px;margin-right:5px;vertical-align:middle}
+.lobes{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(min(100%,230px),1fr))}
+.lobe{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--surface);min-width:0}
+.lobe div{min-width:0}
+.lobe b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pickchip{padding:6px 12px;border-radius:999px;border:1px solid var(--line);font-size:.85rem;font-weight:600}
+.pickchip[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+/* big 2 */
+.row.big{background:color-mix(in srgb,var(--accent) 9%,var(--surface));box-shadow:inset 4px 0 0 var(--accent)}
+.chip.bigc{background:var(--accent);color:var(--accent-ink)}
+.star{color:var(--muted)}
+.star[aria-pressed="true"]{color:var(--warn)}
+.bigcard{border:2px solid var(--accent);border-radius:16px;padding:14px;background:color-mix(in srgb,var(--accent) 6%,var(--surface));display:flex;flex-direction:column;gap:10px}
+.bigrow{display:flex;gap:12px;align-items:center;padding:10px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.bigrow .num{width:30px;height:30px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-family:var(--f-display);font-weight:700;flex:none}
+.bigrow .cb{width:28px;height:28px}
+.bigrow.done .rt b{text-decoration:line-through;color:var(--muted)}
+#fx{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:90}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+<style id="themeStyle"></style>
+
+<div class="shell">
+  <nav class="rail" id="rail" aria-label="Sections"></nav>
+  <main class="main"><div class="col" id="view"></div></main>
+</div>
+<nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
+<div id="focus" class="focus" hidden></div>
+<canvas id="fx" hidden></canvas>
+<input type="file" id="coverFile" accept="image/*" hidden>
+<div id="sheet" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<input type="file" id="mediaFile" accept="image/*,video/*" multiple hidden>
+
+<script>
+(() => {
+"use strict";
+/* ---------- helpers ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const gid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const pad2 = n => String(n).padStart(2, "0");
+const ymd = d => { d = new Date(d); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); };
+const today = () => ymd(Date.now());
+const parseYmd = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const fmtDate = s => { if (!s) return ""; const d = parseYmd(s); return d.getDate() + " " + MONTHS[d.getMonth()].slice(0, 3); };
+const ago = t => { const s = (Date.now() - t) / 1000; if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; if (s < 86400 * 7) return Math.floor(s / 86400) + "d ago"; return fmtDate(ymd(t)); };
+const TYPES = ["domain", "milestone", "project", "task", "subtask"];
+const LABEL = {domain:"Domain", milestone:"Milestone", project:"Project", task:"Task", subtask:"Subtask"};
+const childType = t => TYPES[TYPES.indexOf(t) + 1];
+const checkable = n => n.t === "task" || n.t === "subtask";
+const IC = {
+  tree:'<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M6 12h10"/>',
+  today:'<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/>',
+  dash:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  battle:'<path d="M14.5 17.5 3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2M9.5 17.5 21 6V3h-3L6.5 14.5M11 19l-6-6M8 16l-4 4M5 21l-2-2"/>',
+  feed:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 8h10M7 12h10M7 16h6"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>', chev:'<path d="m9 6 6 6-6 6"/>', check:'<path d="m5 12 5 5 9-10"/>',
+  focus:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>', x:'<path d="M6 6l12 12M18 6 6 18"/>',
+  more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  play:'<path d="M7 4v16l13-8z"/>', pause:'<path d="M7 4h4v16H7zM14 4h4v16h-4z"/>', reset:'<path d="M4 4v6h6M4.6 15a8 8 0 1 0 1.9-8.3L4 10"/>',
+  heart:'<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10Z"/>', chat:'<path d="M4 5h16v11H8l-4 4z"/>',
+  img:'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>',
+  share:'<path d="M12 3v13M7 8l5-5 5 5M5 14v6h14v-6"/>', down:'<path d="M12 3v13M7 11l5 5 5-5M5 21h14"/>', up:'<path d="M12 21V8M7 13l5-5 5 5M5 3h14"/>',
+  map:'<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h10M7 12c5 0 5-7 10-7M7 12c5 0 5 7 10 7"/>',
+  list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  full:'<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>', shrink:'<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  grid:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+  book:'<path d="M3 5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v15a2 2 0 0 0-2-2H3zM21 5a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v15a2 2 0 0 1 2-2h7z"/>',
+  pulse:'<path d="M3 12h4l2-6 4 12 2-6h6"/>', dumbbell:'<path d="M6 7v10M3 9v6M18 7v10M21 9v6M6 12h12"/>',
+  brain:'<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3 2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3 2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>',
+  briefcase:'<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
+  star:'<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>', code:'<path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14"/>',
+  money:'<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/>', music:'<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+  leaf:'<path d="M5 19c0-9 6-14 15-14 0 9-5 15-14 15zM5 19l8-8"/>', flame:'<path d="M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-3 2-4 2-6 1 1 2 2 3 2 0-2-1-4 0-6z"/>',
+  moon:'<path d="M20 14.5A8 8 0 1 1 9.5 4 6.5 6.5 0 0 0 20 14.5z"/>', sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
+  zin:'<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6M11 8v6"/>', zout:'<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6"/>',
+  dots:'<circle cx="6" cy="6" r="1.3"/><circle cx="12" cy="6" r="1.3"/><circle cx="18" cy="6" r="1.3"/><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/><circle cx="6" cy="18" r="1.3"/><circle cx="12" cy="18" r="1.3"/><circle cx="18" cy="18" r="1.3"/>',
+  plain:'<rect x="3" y="3" width="18" height="18" rx="2"/>', lungs:'<path d="M12 3v8M12 11l-3 2M12 11l3 2"/><path d="M9 8C6 8 3 13 3 18c0 2 1 3 3 3 2 0 3-1 3-3zM15 8c3 0 6 5 6 10 0 2-1 3-3 3-2 0-3-1-3-3z"/>',
+  trophy:'<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4"/>'
+};
+const ic = (n, fill) => `<svg viewBox="0 0 24 24" fill="${fill ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, 2600); }
+function ring(p, size = 34, color = "var(--accent)", label = true) {
+  const r = size / 2 - 3.5, c = 2 * Math.PI * r, v = Math.max(0, Math.min(1, p));
+  return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-label="${Math.round(v * 100)}% complete" role="img">
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--surface2)" stroke-width="4"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round" stroke-dasharray="${c * v} ${c}" transform="rotate(-90 ${size/2} ${size/2})"/>
+    ${label ? `<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" style="font-size:${size > 50 ? 15 : 9}px">${Math.round(v * 100)}</text>` : ""}</svg>`;
+}
+const store = { get(k, d) { try { const v = localStorage.getItem("bw:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem("bw:" + k, JSON.stringify(v)); } catch {} } };
+
+/* ---------- state ---------- */
+const S = {
+  db: null, user: null, assets: null, downloads: null, uid: null, ready: false, offline: false, canWrite: true,
+  tree: { nodes: {}, bigHist: {} }, log: { focusNode: {}, focusDay: {} },
+  view: store.get("view", "tree"), treeMode: store.get("treeMode", "list"), expanded: new Set(store.get("exp", [])), showArchived: false,
+  focusId: null, battles: [], battleId: null, chat: [], posts: [], feedTab: "all", follows: {}, openPost: null, comments: [],
+  prof: {}, hmY: new Date().getFullYear(), hmM: new Date().getMonth(), hmSel: null,
+  draft: { kind: "post", text: "", url: "", media: [], task: null, win: null, week: null, author: "" }, uploading: false,
+  mapClosed: new Set(store.get("mapClosed", [])), mapGrid: (g => g === true ? "lines" : g === false || !g ? "plain" : g)(store.get("mapGrid", "plain")), lungClosed: new Set(store.get("lungClosed", [])), lungZoom: store.get("lungZoom", 0), mapZoom: store.get("mapZoom", 1), mapFull: false, mapFocus: null,
+  sound: store.get("sound", true), mode: store.get("mode", "system"), accent: store.get("accent", "moss"), profileId: null, prevView: "feed", pubProf: {},
+};
+let IDX = {}, MEMO = {}, EVENTS = null;
+function reindex() {
+  IDX = {}; MEMO = {}; EVENTS = null;
+  for (const n of Object.values(S.tree.nodes)) (IDX[n.p || "root"] ||= []).push(n);
+  for (const k in IDX) IDX[k].sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+const node = id => S.tree.nodes[id];
+const kids = (id, all) => (IDX[id || "root"] || []).filter(n => all || S.showArchived || !n.archived);
+const liveKids = id => (IDX[id || "root"] || []).filter(n => !n.archived);
+function isDone(n) { return n.rec === "daily" ? (n.doneDates || []).includes(today()) : !!n.done; }
+function prog(n) {
+  if (MEMO[n.id] != null) return MEMO[n.id];
+  const ks = liveKids(n.id); let v;
+  if (ks.length) v = ks.reduce((s, k) => s + prog(k), 0) / ks.length;
+  else v = checkable(n) ? (isDone(n) ? 1 : 0) : 0;
+  return MEMO[n.id] = v;
+}
+function ancestors(n) { const a = []; let c = n; while (c && c.p) { c = node(c.p); if (c) a.unshift(c); } return a; }
+function domainOf(n) { let c = n; while (c && c.p) c = node(c.p); return c; }
+const dcolor = n => `var(--d${(domainOf(n)?.color) || 1})`;
+function descendants(id) { const out = []; const walk = i => { for (const k of (IDX[i] || [])) { out.push(k); walk(k.id); } }; walk(id); return out; }
+function events() {
+  if (EVENTS) return EVENTS; EVENTS = [];
+  for (const n of Object.values(S.tree.nodes)) {
+    if (!checkable(n)) continue;
+    if (n.rec === "daily") for (const d of (n.doneDates || [])) EVENTS.push({ date: d, ts: (n.doneTimes || {})[d] || parseYmd(d).getTime() + 12 * 3600e3, n });
+    else if (n.done && n.doneAt) EVENTS.push({ date: ymd(n.doneAt), ts: n.doneAt, n });
+  }
+  return EVENTS;
+}
+function nextAction(id) {
+  const walk = i => { for (const k of liveKids(i)) { if (prog(k) >= 1) continue; const ks = liveKids(k.id); if (!ks.length) { if (checkable(k)) return k; continue; } const r = walk(k.id); if (r) return r; } return null; };
+  const n = node(id); if (n && checkable(n) && !liveKids(id).length && !isDone(n)) return n;
+  for (const b of bigToday()) { const bn = node(b); if (!bn || bn.archived || prog(bn) >= 1) continue;
+    if (b === id || ancestors(bn).some(a => a.id === id)) { if (!liveKids(b).length) return bn; const r = walk(b); if (r) return r; } }
+  return walk(id);
+}
+
+/* ---------- persistence ---------- */
+let treeRef = null, logRef = null, followRef = null;
+const saver = (getRef, getBody) => { let t = null, busy = false, again = false, dirty = false;
+  const flush = async () => { if (!getRef()) { dirty = false; return; } if (busy) { again = true; return; } busy = true; dirty = false;
+    try { await getRef().set(getBody()); } catch (e) { toast(e && e.code === "quota_exceeded" ? "Storage is full. Archive or delete old branches." : e && e.code === "invalid_argument" ? "You can view this app but not save. Ask the owner for Contributor access." : "Couldn't save. Will retry on your next change."); }
+    busy = false; if (again || dirty) { again = false; flush(); } };
+  return { touch() { dirty = true; clearTimeout(t); t = setTimeout(flush, 600); }, get pending() { return dirty || busy; }, flush };
+};
+const treeSaver = saver(() => treeRef, () => ({ nodes: S.tree.nodes, bigHist: S.tree.bigHist || {}, v: 1, at: Date.now() }));
+const logSaver = saver(() => logRef, () => ({ ...S.log, at: Date.now() }));
+function commit() { reindex(); treeSaver.touch(); render(); syncBattleScores(); }
+
+/* ---------- boot ---------- */
+async function boot() {
+  render();
+  const c = window.claude;
+  if (!c || !c.use) { S.offline = true; S.ready = true; render(); return; }
+  const [db, user, assets, downloads] = await Promise.all(["db", "user", "assets", "downloads"].map(n => c.use(n).catch(() => null)));
+  Object.assign(S, { db, user, assets, downloads });
+  S.uid = user ? await user.id().catch(() => null) : null;
+  if (!db || !S.uid) { S.offline = true; S.ready = true; render(); return; }
+  if (user.can) user.can("data.write").then(v => { if (v === false) { S.canWrite = false; render(); } }).catch(() => {});
+  const base = db.collection("data/users/" + S.uid);
+  treeRef = base.doc("tree"); logRef = base.doc("log"); followRef = base.doc("follows");
+  let gotTree = false;
+  treeRef.onSnapshot(s => {
+    if (treeSaver.pending || s.metadata.hasPendingWrites) { if (!gotTree) { gotTree = true; S.ready = true; render(); } return; }
+    const d = s.exists ? s.data() : null; S.tree = { nodes: JSON.parse(JSON.stringify((d && d.nodes) || {})), bigHist: JSON.parse(JSON.stringify((d && d.bigHist) || {})) };
+    if (!gotTree) { gotTree = true; S.ready = true; } reindex(); render(); if (!S.focusId) {} else renderFocus();
+  }, () => { S.offline = true; S.ready = true; render(); });
+  logRef.onSnapshot(s => { if (logSaver.pending || s.metadata.hasPendingWrites) return; const d = s.exists ? s.data() : {}; S.log = { focusNode: { ...(d.focusNode || {}) }, focusDay: { ...(d.focusDay || {}) } }; if (S.view === "dash") render(); });
+  followRef.onSnapshot(s => { S.follows = { ...((s.exists && s.data().ids) || {}) }; if (S.view === "feed") render(); });
+  db.collection("battles").orderBy("created", "desc").limit(100).onSnapshot(s => { S.battles = s.docs.map(d => ({ id: d.id, ...d.data() })); ensureProfiles(S.battles.flatMap(b => Object.keys(b.members || {}))); if (S.view === "battles" || S.sheetBattleSel) render(); syncBattleScores(); });
+  db.collection("posts").orderBy("at", "desc").limit(80).onSnapshot(s => { S.posts = s.docs.map(d => ({ id: d.id, ...d.data() })); ensureProfiles(S.posts.map(p => p.uid)); if (S.view === "feed") render(); });
+  ensureProfiles([S.uid]);
+}
+async function ensureProfiles(ids) {
+  if (!S.user || !S.user.profiles) return;
+  const need = [...new Set(ids.filter(i => i && !(i in S.prof)))]; if (!need.length) return;
+  need.forEach(i => S.prof[i] = S.prof[i] || null);
+  try { const ps = await S.user.profiles(need); for (const i of need) S.prof[i] = ps[i] || { name: "" }; render(); } catch {}
+}
+const pname = id => (S.prof[id] && S.prof[id].name) || (id === S.uid ? "You" : "Someone");
+const initials = id => { const n = pname(id); return n.split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase() || "?"; };
+const pcolor = id => (S.prof[id] && S.prof[id].color) || `var(--d${1 + ([...String(id)].reduce((a, c) => a + c.charCodeAt(0), 0) % 6)})`;
+const avatar = (id, sm) => `<span class="av${sm ? " sm" : ""}" style="--c:${esc(pcolor(id))}" aria-hidden="true">${esc(initials(id))}</span>`;
+
+/* ---------- tree mutations ---------- */
+function addNode(p, t, data) {
+  const id = gid(); const sib = IDX[p || "root"] || [];
+  S.tree.nodes[id] = { id, p: p || null, t, title: data.title || "Untitled", desc: data.desc || "", due: data.due || "", rec: data.rec || "none", color: data.color || ((sib.length % 6) + 1), battle: data.battle || "", order: (sib.length ? Math.max(...sib.map(s => s.order || 0)) : 0) + 1, created: Date.now(), done: false, doneAt: null, doneDates: [], ex: !!data.ex, ...(t === "domain" ? { icon: data.icon || "leaf", cover: data.cover || null } : {}) };
+  if (p) S.expanded.add(p); saveExp(); return id;
+}
+function setDone(n, v) {
+  if (n.rec === "daily") { const dd = new Set(n.doneDates || []); const tt = { ...(n.doneTimes || {}) }; if (v) { dd.add(today()); tt[today()] = Date.now(); } else { dd.delete(today()); delete tt[today()]; } n.doneDates = [...dd].sort(); n.doneTimes = tt; }
+  else { n.done = v; n.doneAt = v ? (n.doneAt && n.done ? n.doneAt : Date.now()) : null; }
+}
+function toggleNode(id) {
+  const n = node(id); if (!n) return; reindex();
+  const target = prog(n) < 1; const anc = ancestors(n); const before = anc.map(a => prog(a));
+  setDone(n, target); for (const d of descendants(id)) if (checkable(d) && !d.archived) setDone(d, target);
+  let p = node(n.p); reindex();
+  while (p && checkable(p)) { const ks = liveKids(p.id); if (ks.length) setDone(p, ks.every(k => isDone(k))); reindex(); p = node(p.p); }
+  reindex(); let big = null; if (target) for (let i = 0; i < anc.length; i++) if (before[i] < 1 && prog(anc[i]) >= 1 && !checkable(anc[i])) { big = anc[i]; break; }
+  if (target) { celebrate(!!big); toast(big ? (S.view === "tree" && S.treeMode === "lungs" ? `Recruitment manoeuvre! ${big.title} is fully ventilated` : `${LABEL[big.t]} complete: ${big.title}`) : "Done: " + n.title); }
+  commit();
+}
+function deleteNode(id) { for (const d of descendants(id)) delete S.tree.nodes[d.id]; delete S.tree.nodes[id]; commit(); }
+function moveNode(id, dir) {
+  const n = node(id); const sib = kids(n.p, true); const i = sib.indexOf(n); const j = i + dir; if (j < 0 || j >= sib.length) return;
+  sib.forEach((s, k) => s.order = k + 1); const o = sib[j].order; sib[j].order = n.order; n.order = o; commit();
+}
+const saveExp = () => store.set("exp", [...S.expanded]);
+
+/* ---------- example tree ---------- */
+function loadExamples() {
+  const e = { ex: true };
+  const a = addNode(null, "domain", { ...e, title: "Anaesthesia", color: 1, desc: "Exam prep and clinical reading" });
+  const m = addNode(a, "milestone", { ...e, title: "Finish Miller cardiac section", due: addDays(today(), 45) });
+  reindex(); const p = addNode(m, "project", { ...e, title: "Cardiovascular pharmacology" });
+  reindex(); const t1 = addNode(p, "task", { ...e, title: "Read inotropes chapter", desc: "Mechanism, doses, receptor profile" });
+  reindex(); addNode(t1, "subtask", { ...e, title: "Make notes" }); reindex(); addNode(t1, "subtask", { ...e, title: "Make Anki cards" });
+  reindex(); addNode(p, "task", { ...e, title: "Viva practice: vasopressors", due: today() });
+  reindex(); const f = addNode(null, "domain", { ...e, title: "Fitness", color: 2 });
+  reindex(); const fm = addNode(f, "milestone", { ...e, title: "6-day workout habit", due: addDays(today(), 60) });
+  reindex(); const fp = addNode(fm, "project", { ...e, title: "Weekly routine" });
+  reindex(); addNode(fp, "task", { ...e, title: "Workout", rec: "daily" });
+  reindex(); const ai = addNode(null, "domain", { ...e, title: "Learning AI", color: 5 });
+  reindex(); const am = addNode(ai, "milestone", { ...e, title: "Build my first app", due: addDays(today(), 30) });
+  reindex(); const ap = addNode(am, "project", { ...e, title: "Branchwork testing" });
+  reindex(); addNode(ap, "task", { ...e, title: "Test every section and list changes" });
+  [a, m, p, t1, f, fm, fp, ai, am, ap].forEach(i => S.expanded.add(i)); saveExp();
+  commit(); toast("Example branches added");
+}
+function clearExamples() { for (const n of Object.values(S.tree.nodes)) if (n.ex) delete S.tree.nodes[n.id]; commit(); toast("Examples cleared"); }
+
+/* ---------- render: shell ---------- */
+const SECTIONS = [["tree", "Tree", "tree"], ["today", "Today", "today"], ["dash", "Dashboard", "dash"], ["battles", "Battles", "battle"], ["feed", "Feed", "feed"], ["me", "Me", "user"]];
+function renderNav() {
+  const items = SECTIONS.map(([k, l, i]) => `<button class="tab" data-act="nav" data-v="${k}" ${S.view === k ? 'aria-current="page"' : ""}>${ic(i)}<span>${l}</span></button>`).join("");
+  $("#tabbar").innerHTML = items;
+  $("#rail").innerHTML = `<div class="brand">${ring(Object.values(S.tree.nodes).length ? avgDomains() : 0, 30, "var(--accent)", false)}Branchwork</div>` + items + `<button class="tab" data-act="settings" style="margin-top:auto">${ic("gear")}<span>Settings</span></button>`;
+}
+function avgDomains() { const ds = liveKids(null); return ds.length ? ds.reduce((s, d) => s + prog(d), 0) / ds.length : 0; }
+function render() {
+  STATS = null; reindexIfNeeded();
+  renderNav();
+  const v = $("#view");
+  if (!S.ready) { v.innerHTML = `<div class="empty"><h2>Opening your branches…</h2></div>`; return; }
+  const banner = S.offline ? `<div class="banner">Sign in to claude.ai to save your branches and join battles and the feed. Changes you make now last only until you close this page.</div>`
+    : !S.canWrite ? `<div class="banner">You have view-only access, so nothing you change will be saved. Ask the owner to share it with you as a Contributor.</div>` : "";
+  const fn = { tree: viewTree, today: viewToday, dash: viewDash, battles: viewBattles, feed: viewFeed, me: viewProfile }[S.view] || viewTree;
+  const mw0 = $(".mapwrap"); const msc = mw0 ? [mw0.scrollLeft, mw0.scrollTop] : null;
+  v.innerHTML = banner + fn();
+  const mw = $(".mapwrap"); if (mw && msc) { mw.scrollLeft = msc[0]; mw.scrollTop = msc[1]; }
+  if (mw && S.mapFocus) { const g = mw.querySelector(`[data-act=edit][data-id="${S.mapFocus}"]`); S.mapFocus = null;
+    if (g) { const r = g.getBoundingClientRect(), w = mw.getBoundingClientRect(); if (r.left < w.left || r.right + 60 > w.right) mw.scrollLeft += r.left - w.left - 30; if (r.top < w.top + 50 || r.bottom > w.bottom) mw.scrollTop += r.top - w.top - 60; } }
+  document.body.style.overflow = (S.mapFull && S.view === "tree" && S.treeMode !== "list") || S.focusId ? "hidden" : "";
+  afterRender();
+}
+let _lastKey = null; function reindexIfNeeded() { if (_lastKey !== S.tree.nodes) { _lastKey = S.tree.nodes; reindex(); } }
+
+/* ---------- view: tree ---------- */
+function rowHTML(n, depth, opts = {}) {
+  const ks = kids(n.id); const open = S.expanded.has(n.id) || opts.allOpen; const p = prog(n); const dn = checkable(n) ? p >= 1 : false;
+  const late = n.due && n.due < today() && p < 1;
+  const cb = checkable(n) ? `<button class="cb" role="checkbox" aria-checked="${p >= 1 ? "true" : p > 0 ? "mixed" : "false"}" aria-label="Mark ${esc(n.title)} done" data-act="tick" data-id="${n.id}">${ic("check")}</button>` : ring(p, 30, dcolor(n));
+  const bk = checkable(n) ? bigRank(n.id) : 0;
+  let h = `<div class="row${dn ? " done" : ""}${bk ? " big" : ""}" style="--depth:${depth}">
+    <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show children" data-act="exp" data-id="${n.id}">${ic("chev")}</button>
+    ${cb}
+    <div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b>${n.desc ? `<small>${esc(n.desc.split("\n")[0])}</small>` : ""}
+    <span class="meta">${bk ? `<span class="chip bigc">Big 2 · #${bk}</span>` : ""}<span class="chip type">${LABEL[n.t]}</span>${n.ex ? `<span class="chip ex">Example</span>` : ""}${n.rec === "daily" ? `<span class="chip">Daily</span>` : ""}${n.due ? `<span class="chip${late ? " late" : ""}">${late ? "Late · " : ""}${fmtDate(n.due)}</span>` : ""}${n.archived ? `<span class="chip">Archived</span>` : ""}</span></div>
+    <span class="row-actions">${n.t !== "subtask" ? `<button class="icon-btn" title="Add ${LABEL[childType(n.t)].toLowerCase()}" aria-label="Add ${LABEL[childType(n.t)].toLowerCase()}" data-act="add" data-id="${n.id}">${ic("plus")}</button>` : ""}
+    ${checkable(n) ? starBtn(n) : ""}<button class="icon-btn" title="Focus" aria-label="Focus on ${esc(n.title)}" data-act="focus" data-id="${n.id}">${ic("focus")}</button></span></div>`;
+  if (open) for (const k of ks) h += rowHTML(k, depth + 1, opts);
+  return h;
+}
+function domainBlock(d, opts = {}) {
+  const p = prog(d); const ks = kids(d.id); const open = S.expanded.has(d.id) || opts.allOpen;
+  let h = `<section class="dom" style="--dc:var(--d${d.color || 1})">${d.cover && d.cover.url ? `<img class="cover" src="${esc(d.cover.url)}" alt="" loading="lazy">` : ""}<div class="dom-head">
+    <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show milestones" data-act="exp" data-id="${d.id}">${ic("chev")}</button>
+    <span class="ringwrap">${ring(p, 44, `var(--d${d.color || 1})`, false)}<span class="ri">${ic(d.icon || "leaf")}</span></span>
+    <div class="t" data-act="edit" data-id="${d.id}">${esc(d.title)} ${d.ex ? `<span class="chip ex">Example</span>` : ""}<div class="muted" style="font-family:var(--f-body);font-weight:400;font-size:.82rem"><span class="mono">${Math.round(p * 100)}%</span> · ${ks.length} milestone${ks.length === 1 ? "" : "s"}${d.desc ? " · " + esc(d.desc.split("\n")[0]) : ""}</div></div>
+    <button class="icon-btn" title="Add milestone" aria-label="Add milestone" data-act="add" data-id="${d.id}">${ic("plus")}</button>
+    <button class="icon-btn" title="Focus" aria-label="Focus on ${esc(d.title)}" data-act="focus" data-id="${d.id}">${ic("focus")}</button></div>`;
+  if (open) for (const k of ks) h += rowHTML(k, 1, opts);
+  return h + `</section>`;
+}
+function viewTree() {
+  const ds = kids(null); const hasEx = Object.values(S.tree.nodes).some(n => n.ex);
+  const head = `<div class="topbar"><div><h1>Your branches</h1><div class="sub">Domain › Milestone › Project › Task › Subtask. Progress rolls up as you tick things off.</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <div class="seg" role="group" aria-label="Tree layout"><button data-act="tmode" data-v="list" aria-pressed="${S.treeMode === "list"}">List</button><button data-act="tmode" data-v="map" aria-pressed="${S.treeMode === "map"}">Map</button><button data-act="tmode" data-v="lungs" aria-pressed="${S.treeMode === "lungs"}">Lungs</button></div>
+      <button class="btn primary" data-act="add" data-id="">${ic("plus")}Domain</button><button class="icon-btn" data-act="settings" aria-label="Settings" title="Settings">${ic("gear")}</button></div></div>`;
+  if (!ds.length) return head + `<div class="card empty"><h2>Start your first branch</h2><p>Add a domain such as Anaesthesia, Fitness or Side hustle. Then add milestones, projects, tasks and subtasks under it.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center"><button class="btn primary" data-act="add" data-id="">${ic("plus")}Add a domain</button><button class="btn" data-act="examples">Load example branches</button></div></div>`;
+  const tools = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+    <label class="check"><input type="checkbox" id="showArch" data-act="arch" ${S.showArchived ? "checked" : ""}> Show archived</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${hasEx ? `<button class="btn small" data-act="clearex">Clear examples</button>` : ""}
+    <button class="btn small" data-act="expall">Expand all</button><button class="btn small" data-act="collapse">Collapse all</button>
+    <button class="btn small" data-act="export">${ic("down")}Back up</button><button class="btn small" data-act="import">${ic("up")}Restore</button></div></div>`;
+  if (S.treeMode === "map") return head + tools + viewMap(ds);
+  if (S.treeMode === "lungs") return head + tools + viewLungs(ds);
+  return head + tools + `<div class="tree">${ds.map(d => domainBlock(d)).join("")}</div>`;
+}
+function viewMap(ds) {
+  const W = 190, H = 34, GX = 50, GY = 10, TOP = 48; let y = TOP; const items = [], links = [];
+  const isOpen = n => !S.mapClosed.has(n.id);
+  const place = (n, depth) => { const all = kids(n.id); const ks = isOpen(n) ? all : []; let cy;
+    if (!ks.length) { cy = y; y += H + GY; } else { const ys = ks.map(k => place(k, depth + 1)); cy = (ys[0] + ys[ys.length - 1]) / 2; ks.forEach((k, i) => links.push([depth, cy, depth + 1, ys[i]])); }
+    items.push({ n, depth, cy, nk: all.length }); return cy; };
+  ds.forEach(d => { place(d, 0); y += 18; });
+  const maxD = Math.max(...items.map(i => i.depth)); const width = (maxD + 1) * (W + GX) + 10, height = Math.max(y, 100);
+  const lk = links.map(([d1, y1, d2, y2]) => { const x1 = d1 * (W + GX) + W + 26, x2 = d2 * (W + GX); const m = (x1 + x2) / 2; return `<path d="M${x1} ${y1 + H/2} C${m} ${y1 + H/2} ${m} ${y2 + H/2} ${x2} ${y2 + H/2}" fill="none" stroke="var(--muted)" stroke-opacity=".45" stroke-width="1.5"/>`; }).join("");
+  const nd = items.map(({ n, depth, cy, nk }) => { const p = prog(n); const x = depth * (W + GX); const t = n.title.length > 24 ? n.title.slice(0, 23) + "…" : n.title;
+    let tog = "";
+    if (nk) { const closed = !isOpen(n); const cnt = descendants(n.id).filter(k => S.showArchived || !k.archived).length; const lab = closed ? "+" + cnt : "−"; const w = closed ? Math.max(22, 12 + lab.length * 7) : 22;
+      tog = `<g class="mtog" data-act="mtog" data-id="${n.id}" role="button" tabindex="0" aria-label="${closed ? "Show" : "Hide"} ${cnt} item${cnt === 1 ? "" : "s"} under ${esc(n.title)}">
+        <line x1="${x + W}" y1="${cy + H/2}" x2="${x + W + 4}" y2="${cy + H/2}" stroke="${dcolor(n)}" stroke-width="1.5"/>
+        <rect x="${x + W + 4}" y="${cy + H/2 - 11}" width="${w}" height="22" rx="11" fill="var(--surface)" stroke="${dcolor(n)}" stroke-width="1.5"/>
+        <text x="${x + W + 4 + w/2}" y="${cy + H/2}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:${closed ? 11 : 15}px;font-weight:700;fill:${dcolor(n)}">${lab}</text></g>`; }
+    const bk = checkable(n) ? bigRank(n.id) : 0;
+    return `<g class="mnode" data-act="edit" data-id="${n.id}" tabindex="0" role="button" aria-label="${esc(n.title)}, ${Math.round(p*100)}%${bk ? ", Big 2 number " + bk : ""}">${bk ? `<rect x="${x - 4}" y="${cy - 4}" width="${W + 8}" height="${H + 8}" rx="12" fill="none" stroke="var(--accent)" stroke-width="3"/><circle cx="${x + 2}" cy="${cy + 2}" r="10" fill="var(--accent)"/><text x="${x + 2}" y="${cy + 2.5}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:11px;font-weight:700;fill:var(--accent-ink)">${bk}</text>` : ""}<rect x="${x}" y="${cy}" width="${W}" height="${H}" rx="9" fill="var(--bg)" stroke="${dcolor(n)}" stroke-width="${depth ? 1.2 : 2}"/>
+      <rect x="${x}" y="${cy + H - 4}" width="${W * p}" height="4" rx="2" fill="${dcolor(n)}"/>
+      <text x="${x + 10}" y="${cy + H/2 - 1}" dominant-baseline="central" style="font-weight:${depth ? 500 : 700}">${esc(t)}</text>
+      <text x="${x + W - 8}" y="${cy + H/2 - 1}" text-anchor="end" dominant-baseline="central" style="font-family:var(--f-mono);font-size:10px;fill:var(--muted)">${Math.round(p * 100)}%</text></g>${tog}`; }).join("");
+  return `<div class="mapbox${S.mapFull ? " full" : ""}"><div class="maptools">
+    ${S.mapFull ? `<button class="btn small" data-act="mexp">Expand all</button><button class="btn small" data-act="mcol">Collapse all</button>` : ""}
+    <button class="icon-btn" data-act="mzoom" data-v="-1" aria-label="Zoom out" title="Zoom out" ${S.mapZoom <= 0.4 ? "disabled" : ""}>${ic("zout")}</button><span class="zlab mono">${Math.round(S.mapZoom * 100)}%</span><button class="icon-btn" data-act="mzoom" data-v="1" aria-label="Zoom in" title="Zoom in" ${S.mapZoom >= 2.5 ? "disabled" : ""}>${ic("zin")}</button>
+    ${bgBtn()}
+    <button class="icon-btn" data-act="mfull" aria-label="${S.mapFull ? "Exit full screen" : "Full screen"}" title="${S.mapFull ? "Exit full screen" : "Full screen"}">${ic(S.mapFull ? "shrink" : "full")}</button></div>
+    <div class="mapwrap${bgClass()}"><svg width="${Math.round((width + 30) * S.mapZoom)}" height="${Math.round((height + 20) * S.mapZoom)}" viewBox="-10 -10 ${width + 30} ${height + 20}" role="img" aria-label="Mind map of your branches">${lk}${nd}</svg></div></div>
+    <p class="muted" style="margin:0;font-size:.85rem">Tap − to fold a branch and + to open it. Tap a box to edit it. Pinch to zoom.</p>`;
+}
+
+/* ---------- view: today ---------- */
+function viewToday() {
+  const t = today(); const leaves = Object.values(S.tree.nodes).filter(n => checkable(n) && !n.archived && !liveKids(n.id).length);
+  const g = { late: [], today: [], daily: [], done: [] };
+  for (const n of leaves) {
+    if (n.rec === "daily") { (isDone(n) ? g.done : g.daily).push(n); continue; }
+    if (n.done) { if (n.doneAt && ymd(n.doneAt) === t) g.done.push(n); continue; }
+    if (n.due && n.due < t) g.late.push(n); else if (n.due === t) g.today.push(n);
+  }
+  const upcoming = leaves.filter(n => n.rec !== "daily" && !n.done && n.due > t && n.due <= addDays(t, 7)).sort((a, b) => a.due.localeCompare(b.due));
+  const row = n => `<div class="trow"><button class="cb" role="checkbox" aria-checked="${isDone(n)}" aria-label="Mark ${esc(n.title)} done" data-act="tick" data-id="${n.id}">${ic("check")}</button>
+    <div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b><small><span class="dot" style="--dc:${dcolor(n)}"></span> ${esc(ancestors(n).map(a => a.title).join(" › "))}</small></div>
+    ${n.due ? `<span class="chip${n.due < t && !isDone(n) ? " late" : ""}">${fmtDate(n.due)}</span>` : ""}
+    ${starBtn(n)}<button class="icon-btn" aria-label="Focus" data-act="focus" data-id="${n.id}">${ic("focus")}</button></div>`;
+  const sec = (title, arr, note) => arr.length ? `<div class="group"><div class="lbl">${title} · ${arr.length}</div>${arr.map(row).join("")}</div>` : (note ? `<div class="group"><div class="lbl">${title}</div><p class="muted" style="margin:0">${note}</p></div>` : "");
+  const total = g.late.length + g.today.length + g.daily.length + g.done.length;
+  return `<div class="topbar"><div><h1>Today</h1><div class="sub">${new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })} · ${g.done.length} done${total ? " of " + total : ""}</div></div></div>
+    ${bigCard()}${moments()}${quoteOfDay()}
+    ${!leaves.length ? `<div class="card empty"><h2>Nothing scheduled</h2><p>Give tasks a due date or set them to repeat daily, and they'll show up here from every branch.</p><button class="btn" data-act="nav" data-v="tree">Go to your branches</button></div>` : ""}
+    ${sec("Overdue", g.late)}${sec("Due today", g.today, leaves.length ? "No tasks due today." : "")}${sec("Daily habits", g.daily)}${sec("Next 7 days", upcoming)}${sec("Done today", g.done)}`;
+}
+
+/* ---------- view: dashboard ---------- */
+function dayCounts() { const m = {}; for (const e of events()) m[e.date] = (m[e.date] || 0) + 1; return m; }
+const lvl = c => !c ? 0 : c === 1 ? 1 : c <= 3 ? 2 : c <= 6 ? 3 : 4;
+function weekKey(s) { return addDays(s, -((parseYmd(s).getDay() + 6) % 7)); }
+function streaks(dc) {
+  const act = Object.keys(dc).filter(d => dc[d] > 0).sort(); const frozen = new Set(), used = {}; const t = today();
+  if (!act.length) return { cur: 0, best: 0, frozen, usedThisWeek: false };
+  let run = 0, best = 0, pend = null;
+  for (let d = act[0]; d <= t; d = addDays(d, 1)) {
+    if (dc[d]) { run++; pend = null; }
+    else if (d !== t) { const w = weekKey(d);
+      if (run > 0 && !pend && !used[w]) { used[w] = d; frozen.add(d); pend = d; }
+      else { if (pend) { frozen.delete(pend); delete used[weekKey(pend)]; pend = null; } run = 0; } }
+    best = Math.max(best, run);
+  }
+  return { cur: run, best, frozen, usedThisWeek: !!used[weekKey(t)] };
+}
+function viewDash() {
+  const dc = dayCounts(); const st = streaks(dc); const Y = S.hmY, M = S.hmM; const ds = liveKids(null);
+  const mk = Y + "-" + pad2(M + 1); const monthEv = events().filter(e => e.date.startsWith(mk));
+  const focusMonth = Object.entries(S.log.focusDay || {}).filter(([d]) => d.startsWith(mk)).reduce((s, [, v]) => s + v, 0);
+  // calendar
+  const first = new Date(Y, M, 1); const lead = (first.getDay() + 6) % 7; const dim = new Date(Y, M + 1, 0).getDate();
+  let cal = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(w => `<div class="wd" title="${w}">${w[0]}</div>`).join("");
+  for (let i = 0; i < lead; i++) cal += `<div class="cell pad"></div>`;
+  for (let d = 1; d <= dim; d++) { const k = mk + "-" + pad2(d); const c = dc[k] || 0;
+    cal += `<button class="cell l${lvl(c)}${!c && st.frozen.has(k) ? " frz" : ""}${k === today() ? " today" : ""}${k === S.hmSel ? " sel" : ""}" data-act="day" data-v="${k}" aria-label="${d} ${MONTHS[M]}: ${c} done">${d}${c ? `<span class="n">${c}</span>` : ""}</button>`; }
+  const years = []; const firstY = Math.min(new Date().getFullYear() - 2, ...Object.keys(dc).map(k => +k.slice(0, 4))); for (let y = new Date().getFullYear(); y >= firstY; y--) years.push(y);
+  let daylist = "";
+  if (S.hmSel) { const ev = events().filter(e => e.date === S.hmSel); const fm = (S.log.focusDay || {})[S.hmSel] || 0;
+    daylist = `<div class="daylist"><div class="lbl">${fmtDate(S.hmSel)} ${S.hmSel.slice(0, 4)} · ${ev.length} done${fm ? " · " + fm + " min focus" : ""}</div>${ev.length ? ev.map(e => `<div><span class="dot" style="--dc:${dcolor(e.n)}"></span> ${esc(e.n.title)} <span class="muted">· ${esc(domainOf(e.n)?.title || "")}</span></div>`).join("") : `<div class="muted">Nothing completed this day.</div>`}</div>`; }
+  // year strip
+  const ys = new Date(Y, 0, 1); const yl = (ys.getDay() + 6) % 7; let yg = ""; for (let i = 0; i < yl; i++) yg += `<i class="yc pad"></i>`;
+  for (let d = new Date(ys); d.getFullYear() === Y; d.setDate(d.getDate() + 1)) { const k = ymd(d); yg += `<i class="yc l${lvl(dc[k] || 0)}" title="${k}: ${dc[k] || 0}"></i>`; }
+  const yearTotal = Object.entries(dc).filter(([k]) => k.startsWith(Y + "-")).reduce((s, [, v]) => s + v, 0);
+
+  // weekly stacked bars
+  const days7 = [...Array(7)].map((_, i) => addDays(today(), i - 6));
+  const byDayDom = days7.map(d => { const m = {}; for (const e of events()) if (e.date === d) { const dm = domainOf(e.n); const k = dm ? dm.id : "?"; m[k] = (m[k] || 0) + 1; } return m; });
+  const maxW = Math.max(4, ...byDayDom.map(m => Object.values(m).reduce((a, b) => a + b, 0)));
+  const CW = 320, CH = 150, pl = 24, pb = 22, bw = 26;
+  let wk = `<line class="gl" x1="${pl}" x2="${CW}" y1="${CH - pb}" y2="${CH - pb}"/>`;
+  [0.5, 1].forEach(f => { const yv = CH - pb - (CH - pb - 10) * f; wk += `<line class="gl" x1="${pl}" x2="${CW}" y1="${yv}" y2="${yv}" stroke-dasharray="2 3"/><text x="${pl - 6}" y="${yv}" text-anchor="end" dominant-baseline="central">${Math.round(maxW * f)}</text>`; });
+  days7.forEach((d, i) => { const x = pl + 10 + i * ((CW - pl - 10) / 7); let yb = CH - pb;
+    for (const dm of ds.concat([{ id: "?", color: 6 }])) { const c = byDayDom[i][dm.id] || 0; if (!c) continue; const h = (CH - pb - 10) * c / maxW; yb -= h; wk += `<rect x="${x}" y="${yb}" width="${bw}" height="${Math.max(h - 1.5, 1)}" rx="3" fill="var(--d${dm.color || 1})"><title>${esc(dm.title || "Other")}: ${c}</title></rect>`; }
+    wk += `<text x="${x + bw / 2}" y="${CH - 6}" text-anchor="middle">${"MTWTFSS"[(parseYmd(d).getDay() + 6) % 7]}</text>`; });
+
+  // balance donut (selected month)
+  const bal = {}; for (const e of monthEv) { const dm = domainOf(e.n); if (dm) bal[dm.id] = (bal[dm.id] || 0) + 1; }
+  const balTotal = Object.values(bal).reduce((a, b) => a + b, 0); const R = 46, C = 2 * Math.PI * R; let off = 0, donut = "";
+  for (const dm of ds) { const c = bal[dm.id] || 0; if (!c) continue; const len = C * c / balTotal; donut += `<circle cx="60" cy="60" r="${R}" fill="none" stroke="var(--d${dm.color || 1})" stroke-width="16" stroke-dasharray="${Math.max(len - 2, 0.5)} ${C}" stroke-dashoffset="${-off}" transform="rotate(-90 60 60)"><title>${esc(dm.title)}: ${c}</title></circle>`; off += len; }
+  const zero = ds.filter(d => !bal[d.id]).map(d => d.title);
+
+  // hours
+  const hrs = Array(24).fill(0); for (const e of events()) hrs[new Date(e.ts).getHours()]++; const mh = Math.max(1, ...hrs);
+  const peak = hrs.indexOf(Math.max(...hrs)); let hb = `<line class="gl" x1="0" x2="320" y1="100" y2="100"/>`;
+  hrs.forEach((c, h) => { const bh = 88 * c / mh; hb += `<rect x="${h * 13.3 + 1}" y="${100 - bh}" width="10" height="${Math.max(bh, c ? 2 : 0)}" rx="2" fill="${h === peak && c ? "var(--accent)" : "color-mix(in srgb,var(--accent) 45%,var(--surface2))"}"><title>${h}:00 · ${c}</title></rect>`; });
+  [0, 6, 12, 18, 23].forEach(h => hb += `<text x="${h * 13.3 + 6}" y="114" text-anchor="middle">${h}</text>`);
+  const hasHours = events().length > 0;
+
+  // focus by domain
+  const fd = {}; for (const [id, min] of Object.entries(S.log.focusNode || {})) { const n = node(id); const dm = n && domainOf(n); if (dm) fd[dm.id] = (fd[dm.id] || 0) + min; }
+  const mf = Math.max(1, ...Object.values(fd));
+  // milestones
+  const mss = Object.values(S.tree.nodes).filter(n => n.t === "milestone" && !n.archived && n.due);
+  const msHTML = mss.length ? mss.sort((a, b) => a.due.localeCompare(b.due)).map(m => { const p = prog(m); const s = m.created, e = parseYmd(m.due).getTime() + 86399e3; const el = Math.max(0, Math.min(1, (Date.now() - s) / Math.max(1, e - s)));
+    const status = p >= 1 ? ["Complete", "ok"] : Date.now() > e ? ["Overdue", "late"] : p + 0.05 >= el ? ["On track", "ok"] : ["Behind", "late"];
+    return `<div class="ms" style="--dc:${dcolor(m)}"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b style="min-width:0;overflow-wrap:anywhere">${esc(m.title)}</b><span class="chip ${status[1]}">${status[0]}</span></div>
+    <div class="track" role="img" aria-label="${Math.round(p*100)}% done, ${Math.round(el*100)}% of time used"><i style="width:${p * 100}%"></i><b style="left:calc(${el * 100}% - 1px)"></b></div>
+    <div class="muted mono" style="font-size:.75rem">${Math.round(p * 100)}% done · ${Math.round(el * 100)}% of time used · due ${fmtDate(m.due)}</div></div>`; }).join("") : `<p class="muted" style="margin:0">Give a milestone a target date to see whether you're ahead or behind.</p>`;
+
+  const sx = stats(); const wkS = weekSummary();
+  return `<div class="topbar"><div><h1>Dashboard</h1><div class="sub">How your branches are growing</div></div></div>
+  <div class="card"><div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><div class="lvl-badge" aria-hidden="true">${sx.level}</div>
+    <div style="flex:1;min-width:180px"><div class="lbl">Level ${sx.level}</div><div class="bar" style="height:12px;margin:6px 0"><i style="width:${100 * (sx.xp - sx.lo) / (sx.hi - sx.lo)}%"></i></div><div class="muted mono" style="font-size:.78rem">${sx.xp} XP · ${sx.hi - sx.xp} XP to level ${sx.level + 1}</div></div>
+    <button class="btn small" data-act="nav" data-v="me">${ic("user")}Profile</button><button class="icon-btn" data-act="settings" aria-label="Settings" title="Settings">${ic("gear")}</button></div>
+    <p class="muted" style="margin:10px 0 0;font-size:.78rem">Task 10 XP · subtask or daily habit 5 · project 25 · milestone 50 · focus 1 per minute · Big 2 bonus 15 · battle win 100</p></div>
+  <div class="tiles">
+    <div class="tile"><div class="lbl">Current streak</div><div class="v">${st.cur}<small>day${st.cur === 1 ? "" : "s"}</small></div><div class="sub2">Freeze ${st.usedThisWeek ? "used this week" : "ready this week"}</div></div>
+    <div class="tile"><div class="lbl">Best streak</div><div class="v">${st.best}<small>day${st.best === 1 ? "" : "s"}</small></div></div>
+    <div class="tile"><div class="lbl">Big 2 this week</div><div class="v">${sx.big.weekBoth}<small>of ${sx.big.weekDays} days</small></div><div class="sub2">Days both were done</div></div>
+    <div class="tile"><div class="lbl">Done in ${MONTHS[M].slice(0, 3)}</div><div class="v">${monthEv.length}<small>items</small></div></div>
+    <div class="tile"><div class="lbl">Focus in ${MONTHS[M].slice(0, 3)}</div><div class="v">${(focusMonth / 60).toFixed(1)}<small>h</small></div></div>
+  </div>
+  <div class="card"><div class="hm-head"><h2>${MONTHS[M]} ${Y}</h2><div class="hm-ctrl">
+    <button class="icon-btn" aria-label="Previous month" data-act="mon" data-v="-1" style="transform:scaleX(-1)">${ic("chev")}</button>
+    <select id="hmM" aria-label="Month" data-act="hmsel">${MONTHS.map((m, i) => `<option value="${i}" ${i === M ? "selected" : ""}>${m}</option>`).join("")}</select>
+    <select id="hmY" aria-label="Year" data-act="hmsel">${years.map(y => `<option ${y === Y ? "selected" : ""}>${y}</option>`).join("")}</select>
+    <button class="icon-btn" aria-label="Next month" data-act="mon" data-v="1">${ic("chev")}</button>
+    <button class="btn small" data-act="mon" data-v="0">This month</button></div></div>
+    <div class="cal">${cal}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;flex-wrap:wrap"><span class="muted" style="font-size:.8rem">Tap a day to see what you finished.${st.frozen.size ? " Striped days used a streak freeze." : ""}</span>
+    <span class="legend">Less <i style="background:var(--cell0)"></i><i class="l1" style="background:color-mix(in srgb,var(--accent) 28%,var(--cell0))"></i><i style="background:color-mix(in srgb,var(--accent) 52%,var(--cell0))"></i><i style="background:color-mix(in srgb,var(--accent) 76%,var(--cell0))"></i><i style="background:var(--accent)"></i> More</span></div>
+    ${daylist}
+    <div style="margin-top:16px"><div class="lbl" style="margin-bottom:6px">${Y} at a glance · ${yearTotal} done</div><div class="year"><div class="yg">${yg}</div></div></div></div>
+  <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px"><h2>Your week</h2>${S.uid && !S.offline && !LOCAL ? `<button class="btn small" data-act="shareweek">${ic("share")}Share to feed</button>` : ""}</div>${weekCard(wkS)}</div>
+  <div class="card"><h2 style="margin-bottom:12px">Domains</h2>${ds.length ? `<div class="rings">${ds.map(d => { const all = descendants(d.id).filter(n => checkable(n) && !n.archived); return `<div class="rcard" data-act="focus" data-id="${d.id}">${ring(prog(d), 54, `var(--d${d.color || 1})`)}<div><b>${esc(d.title)}</b><span class="muted mono" style="font-size:.75rem">${all.filter(isDone).length}/${all.length} tasks</span></div></div>`; }).join("")}</div>` : `<p class="muted" style="margin:0">Add a domain to see its progress here.</p>`}</div>
+  <div class="grid">
+    <div class="card chart"><h3>Last 7 days</h3><p class="muted" style="margin:2px 0 8px;font-size:.82rem">Items finished each day, by domain</p><svg viewBox="0 0 ${CW} ${CH}" role="img" aria-label="Items finished each of the last 7 days">${wk}</svg></div>
+    <div class="card"><h3>Balance in ${MONTHS[M]}</h3><p class="muted" style="margin:2px 0 8px;font-size:.82rem">Where your effort went</p>
+      ${balTotal ? `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Share of finished items by domain"><circle cx="60" cy="60" r="${R}" fill="none" stroke="var(--surface2)" stroke-width="16"/>${donut}<text x="60" y="60" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-display);font-size:22px;font-weight:700;fill:var(--fg)">${balTotal}</text></svg>
+      <div class="dlist" style="flex:1;min-width:140px">${ds.filter(d => bal[d.id]).map(d => `<div style="display:flex;justify-content:space-between;gap:8px"><span><span class="dot" style="--dc:var(--d${d.color || 1})"></span> ${esc(d.title)}</span><span class="mono">${Math.round(100 * bal[d.id] / balTotal)}%</span></div>`).join("")}</div></div>
+      ${zero.length ? `<p class="muted" style="font-size:.82rem;margin:10px 0 0">Nothing finished in: ${esc(zero.join(", "))}</p>` : ""}` : `<p class="muted" style="margin:0">Nothing finished this month yet.</p>`}</div>
+    <div class="card chart"><h3>Your productive hours</h3><p class="muted" style="margin:2px 0 8px;font-size:.82rem">${hasHours ? `You finish most at ${peak}:00–${peak + 1}:00` : "Finish a few tasks to see your best time of day"}</p><svg viewBox="0 0 320 120" role="img" aria-label="Items finished by hour of day">${hb}</svg></div>
+    <div class="card"><h3>Focus time by domain</h3><p class="muted" style="margin:2px 0 10px;font-size:.82rem">All focus sessions</p>${Object.keys(fd).length ? `<div class="dlist">${ds.filter(d => fd[d.id]).map(d => `<div><div style="display:flex;justify-content:space-between;font-size:.88rem"><span>${esc(d.title)}</span><span class="mono">${fd[d.id] >= 60 ? (fd[d.id] / 60).toFixed(1) + " h" : fd[d.id] + " min"}</span></div><div class="bar" style="--dc:var(--d${d.color || 1})"><i style="width:${100 * fd[d.id] / mf}%"></i></div></div>`).join("")}</div>` : `<p class="muted" style="margin:0">Start a timer in focus mode to track time here.</p>`}</div>
+  </div>
+  <div class="card"><h2 style="margin-bottom:12px">Milestones</h2><div class="dlist" style="gap:16px">${msHTML}</div><p class="muted" style="font-size:.78rem;margin:12px 0 0">The bar is work done. The black line is how much of the time to the deadline has passed.</p></div>
+  <div class="card"><h2 style="margin-bottom:12px">Badges · ${sx.badges.length} of ${BADGES.length}</h2>${badgesHTML(sx.badges, true)}</div>`;
+}
+
+/* ---------- view: battles ---------- */
+function battleState(b) {
+  const now = Date.now(); const ended = now > b.end; const ms = Object.entries(b.members || {}).map(([u, v]) => ({ u, n: (v && v.n) || 0, reached: v && v.reached })).sort((a, z) => z.n - a.n || (a.reached || 9e15) - (z.reached || 9e15));
+  const team = ms.reduce((s, m) => s + m.n, 0);
+  let winner = null; if (b.mode !== "team") { const r = ms.filter(m => m.reached).sort((a, z) => a.reached - z.reached); if (r.length) winner = r[0].u; else if (ended && ms.length && ms[0].n > 0) winner = ms[0].u; }
+  return { ended, ms, team, winner, mine: !!(b.members || {})[S.uid] };
+}
+function left(b) { const s = Math.max(0, b.end - Date.now()) / 1000; if (!s) return "Ended"; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${h}h left` : h ? `${h}h ${m}m left` : `${m}m left`; }
+const MODE = { duel: "Duel · 1 vs 1", group: "Group battle", team: "Team goal" };
+const LOCAL = !!window.BW_LOCAL;
+const soon = name => `<div class="topbar"><h1>${name}</h1></div><div class="card empty"><h2>${name} are coming to the app</h2><p>${name} need an online account so friends can join. They arrive in the next update, when Branchwork gets login and sync. For now they still work in the claude.ai version.</p></div>`;
+function viewBattles() {
+  if (LOCAL) return soon("Battles");
+  if (S.offline) return `<div class="topbar"><h1>Battles</h1></div><div class="card empty"><h2>Sign in to battle</h2><p>Battles are shared with other people, so they need you signed in to claude.ai.</p></div>`;
+  if (S.battleId) { const b = S.battles.find(x => x.id === S.battleId); if (b) return battleDetail(b); S.battleId = null; }
+  const mine = S.battles.filter(b => (b.members || {})[S.uid]); const open = S.battles.filter(b => !(b.members || {})[S.uid] && Date.now() < b.end && !(b.mode === "duel" && Object.keys(b.members || {}).length >= 2));
+  const card = b => { const st = battleState(b); return `<div class="card bcard" data-act="bopen" data-id="${b.id}" role="button" tabindex="0"><div class="top"><div style="min-width:0"><div class="lbl">${MODE[b.mode]}</div><h3 style="overflow-wrap:anywhere">${esc(b.title)}</h3></div><span class="chip ${st.ended ? "" : "ok"}">${left(b)}</span></div>
+    <div class="muted" style="font-size:.85rem">Goal: <b class="mono">${b.goal}</b> ${esc(b.unit)} · ${st.ms.length} member${st.ms.length === 1 ? "" : "s"}</div>
+    <div style="display:flex;gap:4px">${st.ms.slice(0, 6).map(m => avatar(m.u, true)).join("")}</div>
+    ${b.mode === "team" ? `<div class="bar"><i style="width:${Math.min(100, 100 * st.team / b.goal)}%"></i></div>` : st.ms[0] ? `<div class="muted" style="font-size:.85rem">Leader: ${esc(pname(st.ms[0].u))} · <span class="mono">${st.ms[0].n}</span></div>` : ""}</div>`; };
+  return `<div class="topbar"><div><h1>Battles</h1><div class="sub">Race friends to a shared goal before the deadline. Link tasks to a battle and every tick counts.</div></div><button class="btn primary" data-act="bnew">${ic("plus")}New battle</button></div>
+   <div class="lbl">Your battles</div>${mine.length ? `<div class="blist">${mine.map(card).join("")}</div>` : `<div class="card empty"><h2>No battles yet</h2><p>Start a duel with a friend or a group challenge like "50 workouts in 30 days". Then link your tasks to it.</p><button class="btn primary" data-act="bnew">${ic("plus")}Start a battle</button></div>`}
+   ${open.length ? `<div class="lbl">Open to join</div><div class="blist">${open.map(card).join("")}</div>` : ""}`;
+}
+function battleDetail(b) {
+  const st = battleState(b); const max = Math.max(b.goal, ...st.ms.map(m => m.n), 1);
+  const lb = st.ms.map((m, i) => `<div class="lbrow"><span class="mono muted">#${i + 1}</span><button class="av-btn" data-act="prof" data-id="${esc(m.u)}" aria-label="View ${esc(pname(m.u))}'s profile">${avatar(m.u)}</button><div style="min-width:0"><b>${esc(pname(m.u))}${m.u === S.uid ? " (you)" : ""}</b>${m.reached ? ` <span class="chip ok">Reached goal</span>` : ""}<div class="bar" style="margin-top:5px;--dc:${esc(pcolor(m.u))}"><i style="width:${100 * m.n / max}%"></i></div></div><span class="count">${m.n}</span></div>`).join("");
+  const linked = Object.values(S.tree.nodes).filter(n => n.battle === b.id);
+  const win = st.ended || st.winner || (b.mode === "team" && st.team >= b.goal);
+  const winText = b.mode === "team" ? (st.team >= b.goal ? `Team goal reached: ${st.team} ${b.unit}` : st.ended ? `Time's up. The team reached ${st.team} of ${b.goal}.` : "") : st.winner ? `${pname(st.winner)} ${st.winner === S.uid ? "win" : "wins"}${st.ended ? "" : " by reaching the goal first"}` : st.ended ? "Time's up. No one scored." : "";
+  return `<div><button class="btn small" data-act="bback" style="transform:none">‹ All battles</button></div>
+  <div class="topbar"><div style="min-width:0"><div class="lbl">${MODE[b.mode]}</div><h1 style="overflow-wrap:anywhere">${esc(b.title)}</h1><div class="sub">Goal <b class="mono">${b.goal}</b> ${esc(b.unit)} · ${fmtDate(ymd(b.start))} to ${fmtDate(ymd(b.end))} · created by ${esc(pname(b.creator))}</div></div>
+   <div class="chip ${st.ended ? "" : "ok"}" style="font-size:.9rem;padding:6px 12px" id="bleft">${left(b)}</div></div>
+  ${win && winText ? `<div class="winner">${ic("battle")}<span style="flex:1">${esc(winText)}</span>${st.mine ? `<button class="btn small" data-act="sharewin" data-id="${b.id}">${ic("share")}Share</button>` : ""}</div>` : ""}
+  ${!st.mine ? (st.ended ? "" : (b.mode === "duel" && st.ms.length >= 2) ? `<div class="banner">This duel already has two people.</div>` : `<div class="card" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><span>Join to start counting your progress.</span><button class="btn primary" data-act="bjoin" data-id="${b.id}">Join battle</button></div>`) : ""}
+  ${b.mode === "team" ? `<div class="card"><div class="lbl">Team progress</div><div style="display:flex;align-items:baseline;gap:8px;margin:6px 0 8px"><span class="count" style="font-size:2.2rem">${st.team}</span><span class="muted">of ${b.goal} ${esc(b.unit)}</span></div><div class="bar" style="height:14px"><i style="width:${Math.min(100, 100 * st.team / b.goal)}%"></i></div></div>` : ""}
+  <div class="card"><h2 style="margin-bottom:14px">Leaderboard</h2><div class="lb">${lb || `<p class="muted" style="margin:0">No members yet.</p>`}</div></div>
+  ${st.mine ? `<div class="card"><h3>Your linked tasks · ${linked.length}</h3><p class="muted" style="margin:4px 0 10px;font-size:.85rem">Each linked task or daily habit you finish between the start and end counts as 1 ${esc(b.unit)}. Link tasks from a task's edit screen.</p>
+    ${linked.length ? `<div class="group">${linked.map(n => `<div class="trow"><button class="cb" role="checkbox" aria-checked="${isDone(n)}" aria-label="Mark ${esc(n.title)} done" data-act="tick" data-id="${n.id}">${ic("check")}</button><div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b><small>${esc(ancestors(n).map(a => a.title).join(" › "))}</small></div></div>`).join("")}</div>` : `<button class="btn small" data-act="nav" data-v="tree">Pick tasks in your tree</button>`}</div>` : ""}
+  <div class="card"><h3 style="margin-bottom:10px">Battle chat</h3><div class="chat" id="chatbox">${S.chat.length ? S.chat.map(m => `<div class="msg${m.uid === S.uid ? " me" : ""}">${avatar(m.uid, true)}<div class="bub"><b style="font-size:.78rem">${esc(pname(m.uid))}</b><br>${esc(m.text)}</div></div>`).join("") : `<p class="muted" style="margin:0">No messages yet. Say something to push each other.</p>`}</div>
+   ${st.mine ? `<form id="chatform" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input class="inp" id="chatin" maxlength="300" placeholder="Message" style="flex:1;min-width:0"><button class="btn primary">Send</button></form>
+   <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${["🔥 On fire", "💪 Keep going", "😤 Catching up", "👏 Nice one"].map(r => `<button class="btn small" data-act="react" data-v="${r}">${r}</button>`).join("")}</div>` : ""}</div>
+  ${b.creator === S.uid ? `<div><button class="btn small danger" data-act="bdel" data-id="${b.id}">Delete battle</button></div>` : ""}`;
+}
+let chatUnsub = null, chatFor = null;
+function watchChat() {
+  const want = S.view === "battles" && S.battleId && S.db ? S.battleId : null;
+  if (want === chatFor) return; if (chatUnsub) chatUnsub(); chatUnsub = null; chatFor = want; S.chat = [];
+  if (!want) return;
+  chatUnsub = S.db.collection("battles/" + want + "/chat").orderBy("at", "desc").limit(60).onSnapshot(s => { S.chat = s.docs.map(d => d.data()).reverse(); ensureProfiles(S.chat.map(m => m.uid)); if (S.view === "battles") { render(); const cb = $("#chatbox"); if (cb) cb.scrollTop = cb.scrollHeight; } });
+}
+const lastScore = {};
+async function syncBattleScores() {
+  if (!S.db || !S.uid || !S.canWrite) return;
+  for (const b of S.battles) { const me = (b.members || {})[S.uid]; if (!me) continue;
+    let n = 0; for (const x of Object.values(S.tree.nodes)) { if (x.battle !== b.id || !checkable(x)) continue;
+      if (x.rec === "daily") n += (x.doneDates || []).filter(d => { const t = parseYmd(d).getTime(); return t >= parseYmd(ymd(b.start)).getTime() && t <= b.end; }).length;
+      else if (x.done && x.doneAt >= b.start && x.doneAt <= b.end) n++; }
+    if (Date.now() > b.end) continue;
+    if ((me.n || 0) === n || lastScore[b.id] === n) continue; lastScore[b.id] = n;
+    const upd = { n, at: Date.now() }; if (n >= b.goal && !me.reached) upd.reached = Date.now(); if (n < b.goal && me.reached) upd.reached = null;
+    try { await S.db.doc("battles/" + b.id).update({ members: { [S.uid]: upd } }); } catch { delete lastScore[b.id]; }
+  }
+}
+
+/* ---------- view: feed ---------- */
+function platform(url) { let h = ""; try { h = new URL(url).hostname.replace(/^www\.|^m\./, ""); } catch { return null; }
+  const m = [["instagram.com", "Instagram", "IG", "var(--d4)"], ["youtube.com", "YouTube", "YT", "var(--danger)"], ["youtu.be", "YouTube", "YT", "var(--danger)"], ["tiktok.com", "TikTok", "TT", "var(--fg)"], ["facebook.com", "Facebook", "FB", "var(--d2)"], ["fb.watch", "Facebook", "FB", "var(--d2)"], ["x.com", "X", "X", "var(--fg)"], ["twitter.com", "X", "X", "var(--fg)"], ["threads.net", "Threads", "TH", "var(--fg)"], ["linkedin.com", "LinkedIn", "IN", "var(--d2)"], ["reddit.com", "Reddit", "RD", "var(--d6)"], ["pinterest.com", "Pinterest", "PI", "var(--danger)"]];
+  for (const [d, n, a, c] of m) if (h === d || h.endsWith("." + d)) return { name: n, abbr: a, c, h, reel: /reel|shorts|video|watch|\/p\//i.test(url) };
+  return { name: h, abbr: h.slice(0, 2).toUpperCase(), c: "var(--d5)", h }; }
+function linkCard(url) { const p = platform(url); if (!p) return ""; let path = ""; try { const u = new URL(url); path = u.pathname + u.search; } catch {}
+  return `<a class="linkcard" href="${esc(url)}" target="_blank" rel="noopener noreferrer"><span class="pf" style="--c:${p.c}">${esc(p.abbr)}</span><div><b>${p.reel ? "Watch on " : "Open on "}${esc(p.name)}</b><small>${esc(p.h + path)}</small></div></a>`; }
+function postHTML(p) {
+  const likes = Object.entries(p.likes || {}).filter(([, v]) => v).length; const liked = !!(p.likes || {})[S.uid]; const mine = p.uid === S.uid; const following = !!S.follows[p.uid];
+  let body = "";
+  if (p.kind === "quote") body = `<div class="quote">“${esc(p.text)}”${p.author ? `<small>— ${esc(p.author)}</small>` : ""}</div>`;
+  else if (p.text) body = `<p class="ptext">${esc(p.text)}</p>`;
+  if (p.task) body += `<div class="taskcard" style="--dc:var(--d${p.task.color || 1})"><span class="cb">${ic("check")}</span><div style="min-width:0"><div class="lbl">${esc(p.task.type || "Task")} done</div><b style="overflow-wrap:anywhere">${esc(p.task.title)}</b><div class="muted" style="font-size:.8rem;overflow-wrap:anywhere">${esc(p.task.path || "")}</div></div></div>`;
+  if (p.win) body += `<div class="winner">${ic("battle")}<span>${esc(p.win.text)}</span></div>`;
+  if (p.media && p.media.length) body += `<div class="media">${p.media.map(m => /^video/.test(m.type) ? `<video src="${esc(m.url)}" controls preload="metadata" playsinline></video>` : `<img src="${esc(m.url)}" alt="Photo shared by ${esc(pname(p.uid))}" loading="lazy">`).join("")}</div>`;
+  if (p.url) body += linkCard(p.url);
+  if (p.week) body += weekCard(p.week);
+  const open = S.openPost === p.id;
+  return `<article class="card post"><div class="phead"><button class="av-btn" data-act="prof" data-id="${esc(p.uid)}" style="flex:1;min-width:0">${avatar(p.uid)}<span class="who"><b>${esc(pname(p.uid))}${mine ? " (you)" : ""}</b><small>${ago(p.at)}${p.kind === "quote" ? " · Quote" : p.task ? " · Progress" : p.win ? " · Battle" : p.url ? " · Link" : p.week ? " · Weekly summary" : ""}</small></span></button>
+    ${!mine && S.uid ? `<button class="btn small" data-act="follow" data-id="${esc(p.uid)}">${following ? "Following" : "Follow"}</button>` : ""}${mine ? `<button class="icon-btn" aria-label="Delete post" title="Delete post" data-act="pdel" data-id="${p.id}">${ic("x")}</button>` : ""}</div>
+    ${body}
+    <div class="pacts"><button class="btn" aria-pressed="${liked}" data-act="like" data-id="${p.id}">${ic("heart", liked)}${likes || ""}</button>${REACTS.map(([k, e]) => { const r = (p.reacts || {})[k] || {}; const c = Object.values(r).filter(Boolean).length; return `<button class="btn" aria-pressed="${!!r[S.uid]}" data-act="react2" data-id="${p.id}" data-v="${k}" aria-label="React ${k}">${e}${c ? " " + c : ""}</button>`; }).join("")}<button class="btn" data-act="pcom" data-id="${p.id}">${ic("chat")}${open ? "Hide" : "Comments"}</button></div>
+    ${open ? `<div class="comments">${S.comments.length ? S.comments.map(c => `<div class="msg">${avatar(c.uid, true)}<div class="bub"><b style="font-size:.78rem">${esc(pname(c.uid))}</b> <span class="muted" style="font-size:.72rem">${ago(c.at)}</span><br>${esc(c.text)}</div></div>`).join("") : `<p class="muted" style="margin:0;font-size:.88rem">No comments yet.</p>`}
+      <form id="comform" data-id="${p.id}" style="display:flex;gap:8px;flex-wrap:wrap"><input class="inp" id="comin" maxlength="500" placeholder="Write a comment" style="flex:1;min-width:0"><button class="btn primary small">Post</button></form></div>` : ""}</article>`;
+}
+function viewFeed() {
+  if (LOCAL) return soon("Posts").replace("Posts are", "The feed is").replace("Posts need", "The feed needs").replace("<h1>Posts</h1>", "<h1>Feed</h1>");
+  if (S.offline) return `<div class="topbar"><h1>Feed</h1></div><div class="card empty"><h2>Sign in to see the feed</h2><p>The feed is shared with everyone using this app, so it needs you signed in to claude.ai.</p></div>`;
+  const d = S.draft; let posts = S.posts;
+  if (S.feedTab === "following") posts = posts.filter(p => S.follows[p.uid] || p.uid === S.uid); if (S.feedTab === "mine") posts = posts.filter(p => p.uid === S.uid);
+  const kinds = [["post", "Post"], ["quote", "Quote"], ["link", "Link or reel"]];
+  const composer = `<div class="card composer"><div class="seg" role="group" aria-label="Post type">${kinds.map(([k, l]) => `<button data-act="kind" data-v="${k}" aria-pressed="${d.kind === k}">${l}</button>`).join("")}</div>
+    <textarea id="dtext" maxlength="2000" placeholder="${d.kind === "quote" ? "Type the quote" : d.kind === "link" ? "Say something about it (optional)" : "What did you get done? What's keeping you going?"}">${esc(d.text)}</textarea>
+    ${d.kind === "quote" ? `<input class="inp" id="dauthor" maxlength="120" placeholder="Who said it (optional)" value="${esc(d.author)}">` : ""}
+    ${d.kind === "link" ? `<input class="inp" id="durl" type="url" placeholder="Paste a link from Instagram, YouTube, TikTok, X, Facebook…" value="${esc(d.url)}"><p class="muted" style="margin:0;font-size:.8rem">Reels and videos from other apps show as a card that opens the original. They can't play inside this app.</p>${d.url ? linkCard(d.url) : ""}` : ""}
+    ${d.task ? `<div class="taskcard" style="--dc:var(--d${d.task.color || 1})"><span class="cb">${ic("check")}</span><div style="flex:1;min-width:0"><div class="lbl">${esc(d.task.type)} done</div><b>${esc(d.task.title)}</b></div><button class="icon-btn" aria-label="Remove" data-act="dclr" data-v="task">${ic("x")}</button></div>` : ""}
+    ${d.week ? `<div style="position:relative">${weekCard(d.week)}<button class="icon-btn" style="position:absolute;top:6px;right:6px" aria-label="Remove" data-act="dclr" data-v="week">${ic("x")}</button></div>` : ""}
+    ${d.win ? `<div class="winner">${ic("battle")}<span style="flex:1">${esc(d.win.text)}</span><button class="icon-btn" aria-label="Remove" data-act="dclr" data-v="win">${ic("x")}</button></div>` : ""}
+    ${d.media.length ? `<div class="thumbs">${d.media.map((m, i) => `<div class="th">${/^video/.test(m.type) ? `<video src="${esc(m.url)}" muted></video>` : `<img src="${esc(m.url)}" alt="">`}<button class="icon-btn" style="position:absolute;top:0;right:0;background:var(--surface);width:24px;height:24px" aria-label="Remove" data-act="dmrm" data-v="${i}">${ic("x")}</button></div>`).join("")}</div>` : ""}
+    <div class="ctools"><div>${S.assets ? `<button class="btn small" data-act="addmedia" ${S.uploading ? "disabled" : ""}>${ic("img")}${S.uploading ? "Uploading…" : "Photo or video"}</button>` : `<span class="muted" style="font-size:.8rem">Photo uploads need Contributor access.</span>`}</div>
+    <button class="btn primary" data-act="publish" ${S.uploading ? "disabled" : ""}>Share</button></div></div>`;
+  return `<div class="topbar"><div><h1>Feed</h1><div class="sub">Share wins, quotes, photos and links with everyone using Branchwork</div></div></div>
+   ${composer}
+   <div class="seg" role="group" aria-label="Feed filter"><button data-act="ftab" data-v="all" aria-pressed="${S.feedTab === "all"}">Everyone</button><button data-act="ftab" data-v="following" aria-pressed="${S.feedTab === "following"}">Following</button><button data-act="ftab" data-v="mine" aria-pressed="${S.feedTab === "mine"}">Mine</button></div>
+   ${posts.length ? posts.map(postHTML).join("") : `<div class="card empty"><h2>${S.feedTab === "following" ? "No posts from people you follow" : "No posts yet"}</h2><p>${S.feedTab === "following" ? "Follow people from the Everyone tab to see their posts here." : "Be the first: share a task you finished or a quote that keeps you going."}</p></div>`}`;
+}
+let comUnsub = null, comFor = null;
+function watchComments() {
+  const want = S.view === "feed" && S.openPost && S.db ? S.openPost : null; if (want === comFor) return;
+  if (comUnsub) comUnsub(); comUnsub = null; comFor = want; S.comments = []; if (!want) return;
+  comUnsub = S.db.collection("posts/" + want + "/comments").orderBy("at", "asc").limit(100).onSnapshot(s => { S.comments = s.docs.map(d => d.data()); ensureProfiles(S.comments.map(c => c.uid)); if (S.view === "feed") render(); });
+}
+async function publishPost() {
+  const d = S.draft; const ta = $("#dtext"); if (ta) d.text = ta.value.trim(); const au = $("#dauthor"); if (au) d.author = au.value.trim(); const u = $("#durl"); if (u) d.url = u.value.trim();
+  if (d.kind === "link" && d.url && !platform(d.url)) { toast("That link doesn't look right. Paste the full address starting with https://"); return; }
+  if (!d.text && !d.media.length && !(d.kind === "link" && d.url) && !d.task && !d.win && !d.week) { toast("Write something or attach a photo first"); return; }
+  if (d.kind === "quote" && !d.text) { toast("Type the quote first"); return; }
+  const body = { uid: S.uid, kind: d.kind, text: d.text, at: Date.now(), likes: {}, media: d.media.map(m => ({ id: m.id, url: m.url, type: m.type })) };
+  if (d.kind === "quote" && d.author) body.author = d.author; if (d.kind === "link" && d.url) body.url = d.url; if (d.task) body.task = d.task; if (d.win) body.win = d.win; if (d.week) body.week = d.week;
+  try { await S.db.collection("posts").add(body); S.draft = { kind: "post", text: "", url: "", media: [], task: null, win: null, week: null, author: "" }; toast("Shared to the feed"); render(); }
+  catch (e) { toast(e && e.code === "invalid_argument" ? "You can't post with view-only access. Ask the owner for Contributor access." : "Couldn't share. Try again."); }
+}
+
+/* ---------- sheets ---------- */
+function openSheet(html, onMount) { const s = $("#sheet"); s.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`; s.hidden = false; onMount && onMount(s); const f = s.querySelector("input,textarea,select"); f && f.focus(); }
+function closeSheet() { const s = $("#sheet"); s.hidden = true; s.innerHTML = ""; S.sheetBattleSel = false; }
+function nodeSheet(id, parentId) {
+  const editing = !!id; const n = editing ? node(id) : null; const p = editing ? node(n.p) : (parentId ? node(parentId) : null);
+  const t = editing ? n.t : (p ? childType(p.t) : "domain"); const v = n || { title: "", desc: "", due: "", rec: "none", color: ((liveKids(null).length) % 6) + 1, battle: "" };
+  const myBattles = S.battles.filter(b => (b.members || {})[S.uid] && Date.now() < b.end); S.sheetBattleSel = true;
+  const path = p ? [...ancestors(p), p].map(a => a.title).join(" › ") : "";
+  const ks = editing ? kids(id, true) : [];
+  openSheet(`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px"><div style="min-width:0"><div class="lbl">${editing ? "Edit" : "New"} ${LABEL[t].toLowerCase()}</div>${path ? `<div class="muted" style="font-size:.82rem;overflow-wrap:anywhere">${esc(path)}</div>` : ""}</div><button class="icon-btn" aria-label="Close" data-act="close">${ic("x")}</button></div>
+    <form id="nform" style="display:flex;flex-direction:column;gap:12px">
+    <div class="field"><label class="lbl" for="f-title">Heading</label><input type="text" id="f-title" maxlength="140" required value="${esc(v.title)}" placeholder="${t === "domain" ? "e.g. Anaesthesia" : t === "milestone" ? "e.g. Finish Miller by March" : t === "project" ? "e.g. Cardiac chapters" : t === "task" ? "e.g. Read chapter 25" : "e.g. Make notes"}"></div>
+    <div class="field"><label class="lbl" for="f-desc">Description</label><textarea id="f-desc" maxlength="4000" placeholder="Notes, links, what done looks like">${esc(v.desc)}</textarea></div>
+    <div class="frow">${t !== "domain" ? `<div class="field"><label class="lbl" for="f-due">${t === "milestone" ? "Target date" : "Due date"}</label><input type="date" id="f-due" value="${esc(v.due)}"></div>` : ""}
+      ${checkable({ t }) ? `<div class="field"><label class="lbl" for="f-rec">Repeats</label><select id="f-rec"><option value="none" ${v.rec !== "daily" ? "selected" : ""}>Does not repeat</option><option value="daily" ${v.rec === "daily" ? "selected" : ""}>Every day (habit)</option></select></div>` : ""}</div>
+    ${t === "domain" ? `<div class="field"><span class="lbl">Icon</span><div class="iconpick">${DICONS.map(i => `<button type="button" class="ipk" data-act="ipick" data-v="${i}" aria-pressed="${(v.icon || "leaf") === i}" aria-label="${i} icon">${ic(i)}</button>`).join("")}</div></div>
+      <div class="field"><span class="lbl">Cover photo</span><div id="coverprev">${coverPrev(v.cover)}</div></div>` : ""}
+    ${t === "domain" ? `<div class="field"><span class="lbl">Colour</span><div class="swatches">${[1,2,3,4,5,6].map(c => `<button type="button" class="sw" style="--c:var(--d${c})" aria-label="Colour ${c}" aria-pressed="${(v.color || 1) === c}" data-act="swatch" data-v="${c}"></button>`).join("")}</div></div>` : ""}
+    ${t === "task" || t === "subtask" ? `<div class="field"><label class="lbl" for="f-battle">Counts toward battle</label><select id="f-battle"><option value="">None</option>${myBattles.map(b => `<option value="${b.id}" ${v.battle === b.id ? "selected" : ""}>${esc(b.title)}</option>`).join("")}</select>${!myBattles.length ? `<span class="muted" style="font-size:.78rem">Join or start a battle to link this task.</span>` : ""}</div>` : ""}
+    <div class="sheet-actions"><div>${editing ? `<button type="button" class="btn small" data-act="focus" data-id="${id}">${ic("focus")}Focus</button>${t !== "subtask" ? `<button type="button" class="btn small" data-act="add" data-id="${id}">${ic("plus")}Add ${LABEL[childType(t)].toLowerCase()}</button>` : ""}
+      ${checkable(n) ? `<button type="button" class="btn small" data-act="star" data-id="${id}">${ic("star", !!bigRank(id))}${bigRank(id) ? "Remove from Big 2" : "Make it a Big 2"}</button>` : ""}
+      ${S.uid && !S.offline && !LOCAL ? `<button type="button" class="btn small" data-act="sharetask" data-id="${id}">${ic("share")}Share</button>` : ""}` : ""}</div>
+      <div><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">${editing ? "Save" : "Add"}</button></div></div>
+    ${editing ? `<div style="border-top:1px solid var(--line);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button type="button" class="btn small" data-act="mv" data-v="-1" data-id="${id}">Move up</button><button type="button" class="btn small" data-act="mv" data-v="1" data-id="${id}">Move down</button>
+      <button type="button" class="btn small" data-act="archive" data-id="${id}">${n.archived ? "Unarchive" : "Archive"}</button>
+      <span id="delwrap"><button type="button" class="btn small danger" data-act="delask">Delete</button></span></div>
+      <div id="delconfirm" hidden class="banner">Delete "${esc(n.title)}"${ks.length ? ` and everything under it (${descendants(id).length} items)` : ""}? Its history leaves your dashboard too. Archive keeps the history instead.
+      <div style="display:flex;gap:8px;margin-top:8px"><button type="button" class="btn small danger" data-act="del" data-id="${id}">Delete for good</button><button type="button" class="btn small" data-act="delno">Keep it</button></div></div>` : ""}
+    </form>`, s => {
+      SH = { color: v.color || 1, icon: v.icon || "leaf", cover: v.cover || null };
+      s.addEventListener("click", e => { const b = e.target.closest("[data-act=swatch]"); if (b) { SH.color = +b.dataset.v; s.querySelectorAll(".sw").forEach(x => x.setAttribute("aria-pressed", x === b)); }
+        const ip = e.target.closest("[data-act=ipick]"); if (ip) { SH.icon = ip.dataset.v; s.querySelectorAll(".ipk").forEach(x => x.setAttribute("aria-pressed", x === ip)); } });
+      s.querySelector("#nform").addEventListener("submit", e => { e.preventDefault();
+        const val = { title: s.querySelector("#f-title").value.trim() || "Untitled", desc: s.querySelector("#f-desc").value, due: s.querySelector("#f-due")?.value || "", rec: s.querySelector("#f-rec")?.value || "none", battle: s.querySelector("#f-battle")?.value || "", color: SH.color, icon: SH.icon, cover: SH.cover };
+        if (editing) { const { color, icon, cover, ...rest } = val; Object.assign(n, rest); if (t === "domain") Object.assign(n, { color, icon, cover }); } else addNode(parentId || null, t, val);
+        closeSheet(); commit(); });
+    });
+}
+function battleSheet() {
+  const end = new Date(Date.now() + 30 * 86400e3); end.setHours(23, 59, 0, 0);
+  const local = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  openSheet(`<div style="display:flex;justify-content:space-between;align-items:center"><div class="lbl">New battle</div><button class="icon-btn" aria-label="Close" data-act="close">${ic("x")}</button></div>
+  <form id="bform" style="display:flex;flex-direction:column;gap:12px">
+   <div class="field"><label class="lbl" for="b-title">Name</label><input type="text" id="b-title" required maxlength="80" placeholder="e.g. Miller cardiac sprint"></div>
+   <div class="field"><label class="lbl" for="b-mode">Type</label><select id="b-mode"><option value="duel">Duel: 1 vs 1</option><option value="group">Group battle: everyone competes</option><option value="team">Team goal: everyone adds to one total</option></select></div>
+   <div class="frow"><div class="field"><label class="lbl" for="b-goal">Goal</label><input type="number" id="b-goal" min="1" max="100000" value="20" required></div><div class="field"><label class="lbl" for="b-unit">Counted in</label><input type="text" id="b-unit" maxlength="30" value="tasks" placeholder="tasks, chapters, workouts"></div></div>
+   <div class="field"><label class="lbl" for="b-end">Ends</label><input type="datetime-local" id="b-end" value="${local(end)}" required></div>
+   <p class="muted" style="margin:0;font-size:.85rem">Anyone with access to Branchwork can see and join an open battle. After creating it, link tasks to it from each task's edit screen.</p>
+   <div class="sheet-actions"><span></span><div><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary">Create battle</button></div></div></form>`, s => {
+    s.querySelector("#bform").addEventListener("submit", async e => { e.preventDefault();
+      const endT = new Date(s.querySelector("#b-end").value).getTime(); if (!(endT > Date.now())) { toast("Pick an end time in the future"); return; }
+      const body = { title: s.querySelector("#b-title").value.trim(), mode: s.querySelector("#b-mode").value, goal: Math.max(1, +s.querySelector("#b-goal").value || 1), unit: s.querySelector("#b-unit").value.trim() || "tasks", start: Date.now(), end: endT, creator: S.uid, created: Date.now(), members: { [S.uid]: { n: 0, at: Date.now() } } };
+      try { const ref = await S.db.collection("battles").add(body); closeSheet(); S.battleId = ref.id; S.view = "battles"; render(); toast("Battle created. Share this app so others can join."); }
+      catch (err) { toast(err && err.code === "invalid_argument" ? "You need Contributor access to create battles." : "Couldn't create the battle. Try again."); } });
+  });
+}
+
+/* ---------- focus mode ---------- */
+const T = { mode: "work", len: 25 * 60, left: 25 * 60, running: false, work: 0, iv: null, lock: null, preset: 25 };
+function openFocus(id) { S.focusId = id; closeSheet(); $("#focus").hidden = false; document.body.style.overflow = "hidden"; renderFocus(); }
+function closeFocus() { flushFocus(); pauseTimer(); S.focusId = null; $("#focus").hidden = true; $("#focus").innerHTML = ""; document.body.style.overflow = ""; render(); }
+function renderFocus() {
+  if (!S.focusId) return; const n = node(S.focusId); if (!n) { closeFocus(); return; } reindexIfNeeded();
+  const next = nextAction(n.id); const anc = ancestors(n); const mins = (S.log.focusNode || {})[n.id] || 0;
+  const sub = checkable(n) && !kids(n.id).length ? "" : `<div class="dom" style="--dc:${dcolor(n)}">${kids(n.id).map(k => rowHTML(k, 0, {})).join("") || `<div class="row" style="--depth:0"><span class="muted">Nothing under this yet.</span></div>`}</div>`;
+  $("#focus").innerHTML = `<div class="col">
+   <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div class="crumbs">${anc.map(a => `<span>${esc(a.title)}</span>`).join("") || `<span>${LABEL[n.t]}</span>`}</div><button class="btn small" data-act="unfocus">${ic("x")}Exit focus</button></div>
+   <div class="fhero">${ring(prog(n), 84, dcolor(n))}<div style="min-width:0;flex:1"><div class="lbl">Focusing on this ${LABEL[n.t].toLowerCase()}</div><h1 style="overflow-wrap:anywhere">${esc(n.title)}</h1>${n.desc ? `<p class="muted" style="margin:4px 0 0;white-space:pre-wrap">${esc(n.desc)}</p>` : ""}</div></div>
+   ${next ? `<div class="next"><button class="cb" role="checkbox" aria-checked="false" aria-label="Mark ${esc(next.title)} done" data-act="tick" data-id="${next.id}">${ic("check")}</button><div style="flex:1;min-width:0"><div class="lbl">Next action${bigRank(next.id) ? ` · Big 2 #${bigRank(next.id)}` : ""}</div><b style="font-size:1.1rem;overflow-wrap:anywhere">${esc(next.title)}</b>${next.id !== n.id ? `<div class="muted" style="font-size:.8rem">${esc(ancestors(next).slice(anc.length + 1).map(a => a.title).join(" › "))}</div>` : ""}</div></div>`
+     : `<div class="winner">${ic("check")}${prog(n) >= 1 ? "Everything in this branch is done." : "Add a task to get a next action."}</div>`}
+   <div class="card"><div class="timer"><div><div class="lbl" id="tmode">${T.mode === "work" ? "Focus" : "Break"}</div><div class="clock" id="tclock" aria-live="off">${clock(T.left)}</div></div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" data-act="tplay" id="tplay">${ic(T.running ? "pause" : "play", true)}${T.running ? "Pause" : "Start"}</button><button class="btn" data-act="treset">${ic("reset")}Reset</button></div>
+     <div class="seg" role="group" aria-label="Session length">${[25, 50, 15].map(m => `<button data-act="tpreset" data-v="${m}" aria-pressed="${T.preset === m}">${m} min</button>`).join("")}</div></div>
+     <div class="muted" style="font-size:.82rem;margin-top:8px" id="tmins">${mins ? `${mins} min focused on this so far` : "Focus time is saved to your dashboard when you pause or finish"}</div></div>
+   ${sub}
+   ${n.t !== "subtask" ? `<div><button class="btn" data-act="add" data-id="${n.id}">${ic("plus")}Add ${LABEL[childType(n.t)].toLowerCase()}</button></div>` : ""}</div>`;
+}
+const clock = s => pad2(Math.floor(s / 60)) + ":" + pad2(s % 60);
+function startTimer() { if (T.running) return; T.running = true; T.iv = setInterval(tick, 1000); try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => T.lock = l).catch(() => {}); } catch {} renderFocus(); }
+function pauseTimer() { if (!T.running) return; T.running = false; clearInterval(T.iv); try { T.lock && T.lock.release(); } catch {} T.lock = null; flushFocus(); if (S.focusId) renderFocus(); }
+function tick() { T.left--; if (T.mode === "work") T.work++;
+  if (T.left <= 0) { if (T.mode === "work") { flushFocus(); T.mode = "break"; T.left = T.len = (T.preset === 50 ? 10 : 5) * 60; toast("Session done. Take a break."); } else { T.mode = "work"; T.left = T.len = T.preset * 60; toast("Break over. Back to it."); } renderFocus(); return; }
+  const c = $("#tclock"); if (c) c.textContent = clock(T.left); }
+function flushFocus() { const m = Math.round(T.work / 60); if (m < 1 || !S.focusId) return; T.work = 0; const id = S.focusId, d = today();
+  S.log.focusNode[id] = (S.log.focusNode[id] || 0) + m; S.log.focusDay[d] = (S.log.focusDay[d] || 0) + m; logSaver.touch(); toast(`${m} min of focus saved`); }
+
+/* ---------- engagement ---------- */
+let SH = {}, LASTXY = [0, 0], STATS = null, AC = null;
+const DICONS = ["leaf", "book", "pulse", "dumbbell", "brain", "briefcase", "code", "money", "heart", "star", "music", "flame"];
+const REACTS = [["fire", "🔥"], ["clap", "👏"], ["muscle", "💪"]];
+const THEMES = [{ id: "moss", name: "Moss", lv: 1, l: "#2E7748", d: "#5BBA7C" }, { id: "ocean", name: "Ocean", lv: 3, l: "#1E6AA3", d: "#5AA9E0" }, { id: "ember", name: "Ember", lv: 5, l: "#B14D1C", d: "#EE8A55" }, { id: "plum", name: "Plum", lv: 8, l: "#7A3E9D", d: "#BB8CE2" }, { id: "gold", name: "Gold", lv: 12, l: "#876500", d: "#E2B94B" }];
+const BADGES = [
+  { id: "first", name: "First step", desc: "Finish your first task", icon: "check", test: s => s.done >= 1 },
+  { id: "ten", name: "Getting going", desc: "Finish 10 items", icon: "star", test: s => s.done >= 10 },
+  { id: "hundred", name: "Centurion", desc: "Finish 100 items", icon: "trophy", test: s => s.done >= 100 },
+  { id: "streak7", name: "On a roll", desc: "Reach a 7-day streak", icon: "flame", test: s => s.st.best >= 7 },
+  { id: "streak30", name: "Unstoppable", desc: "Reach a 30-day streak", icon: "flame", test: s => s.st.best >= 30 },
+  { id: "project", name: "Builder", desc: "Complete a project", icon: "briefcase", test: s => s.prDone >= 1 },
+  { id: "milestone", name: "Milestone", desc: "Complete a milestone", icon: "trophy", test: s => s.msDone >= 1 },
+  { id: "focus10", name: "Deep focus", desc: "Log 10 hours of focus", icon: "focus", test: s => s.focusMin >= 600 },
+  { id: "night", name: "Night owl", desc: "Finish 5 items between 10 pm and 4 am", icon: "moon", test: s => s.night >= 5 },
+  { id: "early", name: "Early bird", desc: "Finish 5 items between 4 and 7 am", icon: "sun", test: s => s.early >= 5 },
+  { id: "balanced", name: "All-rounder", desc: "Finish items in 3 domains in one week", icon: "leaf", test: s => s.balanced },
+  { id: "priorities", name: "Priorities first", desc: "Finish both Big 2 tasks before noon", icon: "sun", test: s => s.big.beforeNoon },
+  { id: "winner", name: "Champion", desc: "Win a battle or reach a team goal", icon: "battle", test: s => s.won >= 1 },
+];
+const saveMap = () => store.set("mapClosed", [...S.mapClosed]);
+function collapseMap() { S.mapClosed = new Set(Object.keys(IDX).filter(k => k !== "root" && IDX[k].length)); saveMap(); }
+function stats() {
+  if (STATS) return STATS; const ev = events(); const dc = dayCounts(); const st = streaks(dc);
+  let xp = 0; for (const e of ev) xp += (e.n.t === "subtask" || e.n.rec === "daily") ? 5 : 10;
+  const bs2 = bigStats(); xp += bs2.doneCount * 15;
+  let msDone = 0, prDone = 0;
+  for (const n of Object.values(S.tree.nodes)) if ((n.t === "milestone" || n.t === "project") && liveKids(n.id).length && prog(n) >= 1) { if (n.t === "milestone") { msDone++; xp += 50; } else { prDone++; xp += 25; } }
+  const focusMin = Object.values(S.log.focusDay || {}).reduce((a, b) => a + b, 0); xp += focusMin;
+  let won = 0; for (const b of S.battles) { if (!S.uid || !(b.members || {})[S.uid]) continue; const bs = battleState(b); if (b.mode === "team" ? bs.team >= b.goal : bs.winner === S.uid) { won++; xp += b.mode === "team" ? 50 : 100; } }
+  const level = Math.floor(Math.sqrt(xp / 50)) + 1;
+  const hrs = ev.map(e => new Date(e.ts).getHours());
+  const wk = {}; for (const e of ev) { const dm = domainOf(e.n); if (dm) (wk[weekKey(e.date)] ||= new Set()).add(dm.id); }
+  STATS = { big: bs2, done: ev.length, xp, level, lo: 50 * (level - 1) ** 2, hi: 50 * level ** 2, st, focusMin, msDone, prDone, won,
+    night: hrs.filter(h => h >= 22 || h < 4).length, early: hrs.filter(h => h >= 4 && h < 7).length, balanced: Object.values(wk).some(x => x.size >= 3) };
+  STATS.badges = BADGES.filter(b => b.test(STATS)).map(b => b.id); return STATS;
+}
+function badgesHTML(ids, showLocked) {
+  const list = showLocked ? BADGES : BADGES.filter(b => ids.includes(b.id));
+  if (!list.length) return `<p class="muted" style="margin:0">No badges yet.</p>`;
+  return `<div class="badges">${list.map(b => { const on = ids.includes(b.id); return `<div class="badge${on ? "" : " locked"}"><span class="bi">${ic(b.icon)}</span><div><b>${b.name}</b><small>${on ? "Earned · " : ""}${b.desc}</small></div></div>`; }).join("")}</div>`;
+}
+function weekSummary() {
+  const mon = weekKey(today()); const days = [...Array(7)].map((_, i) => addDays(mon, i)).filter(d => d <= today());
+  const ev = events().filter(e => e.date >= mon && e.date <= today()); const per = {}; ev.forEach(e => per[e.date] = (per[e.date] || 0) + 1);
+  const best = days.reduce((a, d) => (per[d] || 0) > (per[a] || 0) ? d : a, days[0]);
+  const dm = {}; ev.forEach(e => { const d = domainOf(e.n); if (d) dm[d.title] = (dm[d.title] || 0) + 1; }); const top = Object.entries(dm).sort((a, b) => b[1] - a[1])[0];
+  const fm = days.reduce((s2, d) => s2 + ((S.log.focusDay || {})[d] || 0), 0);
+  return { range: `${fmtDate(mon)} – ${fmtDate(today())}`, items: ev.length, focusH: +(fm / 60).toFixed(1), bestDay: per[best] ? parseYmd(best).toLocaleDateString(undefined, { weekday: "long" }) : "", top: top ? top[0] : "" };
+}
+const weekCard = w => `<div class="weekcard"><div class="lbl">Week · ${esc(w.range)}</div><div class="wk-grid"><div><b class="mono">${+w.items || 0}</b><small>items done</small></div><div><b class="mono">${+w.focusH || 0}</b><small>hours of focus</small></div><div><b>${esc(w.bestDay || "–")}</b><small>best day</small></div><div><b>${esc(w.top || "–")}</b><small>top domain</small></div></div></div>`;
+function coverPrev(c) {
+  if (c && c.url) return `<img class="cover" style="border-radius:10px" src="${esc(c.url)}" alt="Cover photo"><div style="display:flex;gap:8px;margin-top:8px"><button type="button" class="btn small" data-act="coverup">Change</button><button type="button" class="btn small" data-act="coverrm">Remove</button></div>`;
+  return S.assets ? `<button type="button" class="btn small" data-act="coverup">${ic("img")}Add cover photo</button>` : `<span class="muted" style="font-size:.85rem">Sign in with Contributor access to add photos.</span>`;
+}
+function moments() {
+  if (!S.uid) return ""; const out = [];
+  for (const b of S.battles) { if (!(b.members || {})[S.uid] || Date.now() > b.end) continue; const st = battleState(b);
+    if (b.mode === "team") { out.push([b, `Team at ${st.team} of ${b.goal} ${b.unit}`, "ok"]); continue; }
+    if (st.ms.length < 2) { out.push([b, "Waiting for someone to join", ""]); continue; }
+    const me = st.ms.find(m => m.u === S.uid), lead = st.ms[0];
+    if (lead.u === S.uid) { const gap = lead.n - st.ms[1].n; out.push([b, gap > 0 ? `You lead by ${gap}` : "You're tied for the lead", "ok"]); }
+    else out.push([b, `${pname(lead.u)} leads you by ${lead.n - me.n}`, "late"]); }
+  return out.length ? `<div class="group"><div class="lbl">Your battles</div>${out.map(([b, t, c]) => `<div class="trow" data-act="bgo" data-id="${b.id}" role="button" tabindex="0" style="cursor:pointer"><span class="icon-btn" style="color:var(--accent)">${ic("battle")}</span><div class="rt"><b>${esc(b.title)}</b><small>${left(b)}</small></div><span class="chip ${c}">${esc(t)}</span></div>`).join("")}</div>` : "";
+}
+function quoteOfDay() {
+  if (LOCAL) return "";
+  if (S.offline) return ""; const qs = S.posts.filter(p => p.kind === "quote" && p.text);
+  if (!qs.length) return `<div class="card" style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><span class="muted">Quotes posted in the feed show up here, a new one each day.</span><button class="btn small" data-act="quotego">Post a quote</button></div>`;
+  const q = qs[Math.floor(parseYmd(today()).getTime() / 864e5) % qs.length];
+  return `<div class="quote">“${esc(q.text)}”<small>${q.author ? "— " + esc(q.author) + " · " : ""}shared by ${esc(pname(q.uid))}</small></div>`;
+}
+function confetti(big) {
+  try { if (matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch {}
+  const c = $("#fx"); const ctx = c.getContext("2d"); if (!ctx) return; const dpr = window.devicePixelRatio || 1;
+  c.width = innerWidth * dpr; c.height = innerHeight * dpr; ctx.scale(dpr, dpr); c.hidden = false;
+  const cs = getComputedStyle(document.documentElement); const cols = [1, 2, 3, 4, 5, 6].map(i => cs.getPropertyValue("--d" + i).trim()).concat(cs.getPropertyValue("--accent").trim());
+  const [x, y] = big ? [innerWidth / 2, innerHeight / 3] : LASTXY; const N = big ? 170 : 40;
+  const ps = [...Array(N)].map(() => { const a = Math.random() * Math.PI * 2, sp = (big ? 7 : 3.6) * (0.35 + Math.random()); return { x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (big ? 4 : 2.6), r: 3 + Math.random() * 4, c: cols[Math.floor(Math.random() * cols.length)], rot: Math.random() * 6, vr: (Math.random() - .5) * .35 }; });
+  const t0 = performance.now(), dur = big ? 1900 : 950; cancelAnimationFrame(confetti.raf);
+  const step = t => { const k = (t - t0) / dur; ctx.clearRect(0, 0, innerWidth, innerHeight); if (k >= 1) { c.hidden = true; return; }
+    for (const p of ps) { p.vy += 0.17; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.rot += p.vr; ctx.save(); ctx.globalAlpha = Math.min(1, 1.6 - k * 1.6); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.c; ctx.fillRect(-p.r, -p.r / 2, p.r * 2, p.r); ctx.restore(); }
+    confetti.raf = requestAnimationFrame(step); };
+  confetti.raf = requestAnimationFrame(step);
+}
+function chime(big) {
+  if (!S.sound) return;
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); const notes = big ? [523.25, 659.25, 783.99, 1046.5] : [659.25, 987.77];
+    notes.forEach((f, i) => { const o = AC.createOscillator(), g = AC.createGain(); o.type = "sine"; o.frequency.value = f; const t = AC.currentTime + i * 0.09;
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.11, t + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.38); o.connect(g).connect(AC.destination); o.start(t); o.stop(t + 0.42); }); } catch {}
+}
+function celebrate(big) { confetti(big); chime(big); }
+function applyTheme() {
+  const r = document.documentElement; if (S.mode === "system") r.removeAttribute("data-theme"); else r.setAttribute("data-theme", S.mode);
+  const t = THEMES.find(x => x.id === S.accent) || THEMES[0];
+  const tl = THEMES.map(x => `--t-${x.id}:${x.l}`).join(";"), td = THEMES.map(x => `--t-${x.id}:${x.d}`).join(";");
+  $("#themeStyle").textContent = `:root{--accent:${t.l};${tl}} @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--accent:${t.d};${td}}} :root[data-theme="dark"]{--accent:${t.d};${td}}`;
+}
+function installHTML() {
+  if (window.matchMedia && matchMedia("(display-mode: standalone)").matches) return `<p class="muted" style="margin:0;font-size:.85rem">Branchwork is installed on this device. Your data is saved on this device; use Back up in the Tree tab to keep a copy.</p>`;
+  if (window.BW_INSTALL) return `<button type="button" class="btn primary" data-act="install">${ic("down")}Install Branchwork on this device</button>`;
+  return `<p class="muted" style="margin:0;font-size:.85rem">To install: in Chrome, tap ⋮ then <b>Install app</b> or <b>Add to Home screen</b>. On iPad or iPhone, open in Safari, tap Share, then <b>Add to Home Screen</b>.</p>`;
+}
+function settingsSheet() {
+  const sx = stats();
+  openSheet(`<div style="display:flex;justify-content:space-between;align-items:center"><h2>Settings</h2><button class="icon-btn" aria-label="Close" data-act="close">${ic("x")}</button></div>
+   <div class="field"><span class="lbl">Appearance</span><div class="seg" role="group" aria-label="Appearance">${[["system", "Match my device"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-act="setmode" data-v="${k}" aria-pressed="${S.mode === k}">${l}</button>`).join("")}</div></div>
+   <div class="field"><span class="lbl">Colour theme</span><div class="themes">${THEMES.map(t => { const lock = sx.level < t.lv; return `<button type="button" class="thm" data-act="setacc" data-v="${t.id}" aria-pressed="${S.accent === t.id}" ${lock ? "disabled" : ""}><span class="sw" style="--c:var(--t-${t.id})"></span><span>${t.name}</span><small>${lock ? "Level " + t.lv : ""}</small></button>`; }).join("")}</div>
+     <span class="muted" style="font-size:.8rem">Level up to unlock more themes. You're level ${sx.level}.</span></div>
+   <label class="check"><input type="checkbox" id="sndchk" data-act="setsnd" ${S.sound ? "checked" : ""}> Play a sound when I finish something</label>${LOCAL ? installHTML() : ""}`);
+}
+let profUnsub = null, profFor = null;
+function watchProfile() {
+  const want = S.view === "me" && S.profileId && S.profileId !== S.uid && S.db ? S.profileId : null; if (want === profFor) return;
+  if (profUnsub) profUnsub(); profUnsub = null; profFor = want; if (!want) return; ensureProfiles([want]);
+  profUnsub = S.db.doc("profiles/" + want).onSnapshot(sn => { S.pubProf[want] = sn.exists ? sn.data() : {}; if (S.view === "me") render(); }, () => {});
+}
+function viewProfile() {
+  const isMe = !S.profileId || S.profileId === S.uid; const id = isMe ? S.uid : S.profileId;
+  const back = !isMe ? `<div><button class="btn small" data-act="pback">‹ Back</button></div>` : "";
+  let p; if (isMe) { const sx = stats(); p = { level: sx.level, xp: sx.xp, badges: sx.badges, streak: sx.st.cur, best: sx.st.best, done: sx.done, focusMin: sx.focusMin }; }
+  else { p = S.pubProf[id]; if (p === undefined) return back + `<div class="card empty"><h2>Opening profile…</h2></div>`; }
+  const has = p && p.level != null; const lv = has ? p.level : 1, xp = has ? p.xp : 0, lo = 50 * (lv - 1) ** 2, hi = 50 * lv ** 2;
+  const name = isMe ? ((S.prof[S.uid] && S.prof[S.uid].name) || "You") : pname(id); const posts = id ? S.posts.filter(x => x.uid === id) : [];
+  return `${back}<div class="card"><div class="profhead">${id ? avatar(id).replace('class="av"', 'class="av lg"') : `<span class="av lg">${ic("user")}</span>`}
+    <div style="flex:1;min-width:0"><h1 style="overflow-wrap:anywhere">${esc(name)}</h1><div class="muted">Level ${lv} · ${xp} XP</div><div class="bar" style="height:10px;margin-top:8px;max-width:360px"><i style="width:${100 * (xp - lo) / (hi - lo)}%"></i></div></div>
+    ${isMe ? `<button class="icon-btn" data-act="settings" aria-label="Settings" title="Settings">${ic("gear")}</button>` : S.uid ? `<button class="btn small" data-act="follow" data-id="${esc(id)}">${S.follows[id] ? "Following" : "Follow"}</button>` : ""}</div></div>
+   ${has ? `<div class="tiles"><div class="tile"><div class="lbl">Streak</div><div class="v">${p.streak || 0}<small>days</small></div></div><div class="tile"><div class="lbl">Best streak</div><div class="v">${p.best || 0}<small>days</small></div></div>
+     <div class="tile"><div class="lbl">Items done</div><div class="v">${p.done || 0}</div></div><div class="tile"><div class="lbl">Focus</div><div class="v">${((p.focusMin || 0) / 60).toFixed(1)}<small>h</small></div></div></div>
+     <div class="card"><h2 style="margin-bottom:12px">Badges · ${(p.badges || []).length} of ${BADGES.length}</h2>${badgesHTML(p.badges || [], isMe)}</div>`
+   : `<div class="card"><p class="muted" style="margin:0">${esc(name)} hasn't opened Branchwork since profiles were added, so there are no stats to show yet.</p></div>`}
+   <div class="lbl">Posts · ${posts.length}</div>${posts.length ? posts.map(postHTML).join("") : `<div class="card"><p class="muted" style="margin:0">No posts yet.</p></div>`}`;
+}
+let pubLast = "", pubBusy = false, pubT = null;
+function syncPublic(sx) {
+  if (!S.db || !S.uid || !S.canWrite) return; const body = { xp: sx.xp, level: sx.level, badges: sx.badges, streak: sx.st.cur, best: sx.st.best, done: sx.done, focusMin: sx.focusMin };
+  const k = JSON.stringify(body); if (k === pubLast) return; clearTimeout(pubT);
+  pubT = setTimeout(async () => { if (pubBusy) return; pubBusy = true; try { await S.db.doc("profiles/" + S.uid).set({ ...body, at: Date.now() }); pubLast = k; } catch {} pubBusy = false; }, 2000);
+}
+function checkAchievements() {
+  if (!S.ready) return; const sx = stats(); syncPublic(sx);
+  const seen = store.get("seen", null), lastL = store.get("lvl", null);
+  if (seen === null || lastL === null) { store.set("seen", sx.badges); store.set("lvl", sx.level); return; }
+  const fresh = sx.badges.filter(b => !seen.includes(b));
+  if (fresh.length) { store.set("seen", [...new Set([...seen, ...sx.badges])]); const b = BADGES.find(x => x.id === fresh[0]); setTimeout(() => { toast("Badge earned: " + b.name); celebrate(true); }, 700); }
+  if (sx.level > lastL) setTimeout(() => { toast("Level up! You're now level " + sx.level); celebrate(true); }, fresh.length ? 2600 : 700);
+  if (sx.level !== lastL) store.set("lvl", sx.level);
+}
+
+/* ---------- big 2 ---------- */
+const bigToday = () => ((S.tree.bigHist || {})[today()] || []).filter(id => node(id));
+const bigRank = id => { const i = bigToday().indexOf(id); return i < 0 ? 0 : i + 1; };
+const starBtn = n => { const r = bigRank(n.id); return `<button class="icon-btn star" aria-pressed="${!!r}" title="${r ? "Remove from today's Big 2" : "Make it one of today's Big 2"}" aria-label="${r ? "Remove from Big 2" : "Add to Big 2"}" data-act="star" data-id="${n.id}">${ic("star", !!r)}</button>`; };
+function setBig(arr) { const h = { ...(S.tree.bigHist || {}) }; h[today()] = arr; const cut = addDays(today(), -400); for (const k in h) if (k < cut) delete h[k]; S.tree.bigHist = h; commit(); }
+function starNode(id) {
+  const b = bigToday(); if (b.includes(id)) { setBig(b.filter(x => x !== id)); toast("Removed from today's Big 2"); return; }
+  if (b.length < 2) { setBig([...b, id]); toast(`Today's Big 2 · #${b.length + 1}: ${node(id).title}`); return; }
+  closeSheet(); openSheet(`<div style="display:flex;justify-content:space-between;align-items:center"><h2>Replace which one?</h2><button class="icon-btn" aria-label="Close" data-act="close">${ic("x")}</button></div>
+    <p class="muted" style="margin:0">You already have 2 tasks for today. Pick one to swap for "${esc(node(id).title)}".</p>
+    ${b.map((x, i) => `<button class="bigrow" style="text-align:left;cursor:pointer" data-act="bigrep" data-id="${x}" data-v="${id}"><span class="num">${i + 1}</span><span class="rt"><b>${esc(node(x).title)}</b><small>${esc(ancestors(node(x)).map(a => a.title).join(" › "))}</small></span></button>`).join("")}
+    <button class="btn" data-act="close">Keep both</button>`);
+}
+function doneBy(n, date) { return n.rec === "daily" ? (n.doneDates || []).includes(date) : !!(n.done && n.doneAt && ymd(n.doneAt) <= date); }
+function doneTime(n, date) { return n.rec === "daily" ? ((n.doneTimes || {})[date] || 0) : (n.doneAt || 0); }
+function bigStats() {
+  const h = S.tree.bigHist || {}; let doneCount = 0, beforeNoon = false; const both = new Set();
+  for (const [d, ids] of Object.entries(h)) { const ns = ids.map(node).filter(Boolean); const dn = ns.filter(n => doneBy(n, d)); doneCount += dn.length;
+    if (ns.length === 2 && dn.length === 2) { both.add(d); if (ns.every(n => { const t = doneTime(n, d); return t && t < parseYmd(d).getTime() + 12 * 3600e3 && ymd(t) === d; })) beforeNoon = true; } }
+  const mon = weekKey(today()); const days = [...Array(7)].map((_, i) => addDays(mon, i)).filter(d => d <= today());
+  return { doneCount, beforeNoon, weekBoth: days.filter(d => both.has(d)).length, weekDays: days.length };
+}
+function prevBig() { const h = S.tree.bigHist || {}; const prev = Object.keys(h).filter(d => d < today()).sort().pop(); const un = prev ? h[prev].map(node).filter(n => n && !n.archived && !isDone(n)) : []; return { prev, un }; }
+function bigCard() {
+  const b = bigToday().map(node);
+  if (!b.length) { const pr = prevBig();
+    if (pr.un.length && store.get("carryNo", "") !== today()) return `<div class="bigcard"><div class="lbl">Today's Big 2</div><b>Carry over from ${fmtDate(pr.prev)}?</b><div class="muted" style="font-size:.9rem">${pr.un.map(n => esc(n.title)).join(" · ")} ${pr.un.length === 1 ? "isn't" : "aren't"} done yet.</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary small" data-act="carry">Carry over</button><button class="btn small" data-act="carryno">Pick new ones</button></div></div>`;
+    return `<div class="bigcard"><div class="lbl">Today's Big 2</div><b style="font-size:1.05rem">What are your 2 most important tasks today?</b><div class="muted" style="font-size:.9rem">Tap the ${ic("star").replace("<svg", '<svg style="width:15px;height:15px;vertical-align:-2px"')} star on any task to pick it. Do these first, before anything else.</div></div>`; }
+  const allDone = b.every(n => isDone(n) || prog(n) >= 1);
+  return `<div class="bigcard"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div class="lbl">Today's Big 2${allDone && b.length === 2 ? " · both done" : ""}</div>${b.length === 2 ? `<button class="btn small" data-act="bigswap">Swap order</button>` : ""}</div>
+    ${b.map((n, i) => { const dn = isDone(n) || prog(n) >= 1; return `<div class="bigrow${dn ? " done" : ""}"><span class="num">${i + 1}</span><button class="cb" role="checkbox" aria-checked="${dn}" aria-label="Mark ${esc(n.title)} done" data-act="tick" data-id="${n.id}">${ic("check")}</button><div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b><small><span class="dot" style="--dc:${dcolor(n)}"></span> ${esc(ancestors(n).map(a => a.title).join(" › "))}</small></div><button class="icon-btn" aria-label="Focus" data-act="focus" data-id="${n.id}">${ic("focus")}</button></div>`; }).join("")}
+    ${b.length === 1 ? `<div class="muted" style="font-size:.85rem">Pick one more with the star.</div>` : ""}</div>`;
+}
+
+/* ---------- lungs ---------- */
+const bgBtn = () => `<button class="icon-btn" data-act="mgrid" aria-label="Background: ${S.mapGrid}. Tap to change" title="Background: ${S.mapGrid === "plain" ? "plain" : S.mapGrid === "lines" ? "lined grid" : "dotted grid"} (tap to change)">${ic(S.mapGrid === "plain" ? "plain" : S.mapGrid === "lines" ? "grid" : "dots")}</button>`;
+const bgClass = () => S.mapGrid === "lines" ? " gridbg" : S.mapGrid === "dots" ? " dotbg" : "";
+function lungPick() { const live = liveKids(null); const pk = (store.get("lungPick", null) || []).filter(id => live.some(d => d.id === id)); return pk.length ? pk.slice(0, 5) : live.slice(0, 5).map(d => d.id); }
+const LOBES = [
+  { name: "Right upper lobe", side: "R", root: [350, 228], dir: -120, spread: 70 },
+  { name: "Left upper lobe", side: "L", root: [678, 248], dir: -45, spread: 88 },
+  { name: "Right lower lobe", side: "R", root: [398, 440], dir: 115, spread: 60 },
+  { name: "Left lower lobe", side: "L", root: [632, 448], dir: 66, spread: 66 },
+  { name: "Right middle lobe", side: "R", root: [322, 352], dir: 172, spread: 40 },
+];
+function overdueSet() { const set = new Set(), t = today(); for (const n of Object.values(S.tree.nodes)) { if (!checkable(n) || n.archived || n.rec === "daily" || isDone(n) || !n.due || n.due >= t) continue; set.add(n.id); ancestors(n).forEach(a => set.add(a.id)); } return set; }
+function hull(pts) { pts = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]); if (pts.length < 3) return pts; const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); const lo = [], up = [];
+  for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (const p of pts.slice().reverse()) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1)); }
+function viewLungs() {
+  const pick = lungPick(); const shown = pick.map(node).filter(Boolean); const live = liveKids(null);
+  const OD = overdueSet(); const big = bigToday(); const zoom = S.lungZoom;
+  const W = [13, 9, 6.5, 4.6, 3.3], LEN = [0, 88, 68, 52, 40];
+  const isOpen = n => !S.lungClosed.has(n.id); const LW = {};
+  const lw = n => { if (LW[n.id] != null) return LW[n.id]; const ks = isOpen(n) ? kids(n.id) : []; return LW[n.id] = ks.length ? ks.reduce((a, k) => a + lw(k), 0) : 1; };
+  const segs = [], leaves = [], togs = [], labels = [], sidePts = { R: [], L: [] };
+  const lay = (n, x, y, ang, spread, depth, side) => {
+    const all = kids(n.id); const ks = isOpen(n) ? all : [];
+    if (all.length) togs.push({ n, x, y, closed: !isOpen(n) });
+    if (!ks.length) { leaves.push({ n, x, y, ang, closed: all.length > 0 }); sidePts[side].push([x + Math.cos(ang * Math.PI / 180) * 18, y + Math.sin(ang * Math.PI / 180) * 18]); return; }
+    const tot = ks.reduce((a, k) => a + lw(k), 0); let a0 = ang - spread / 2;
+    for (const k of ks) { const share = spread * lw(k) / tot; const a = a0 + share / 2; a0 += share; const r = a * Math.PI / 180; const len = LEN[Math.min(depth + 1, 4)];
+      const x2 = x + Math.cos(r) * len, y2 = y + Math.sin(r) * len;
+      segs.push({ n: k, x1: x, y1: y, x2, y2, w: W[Math.min(depth + 1, 4)], depth: depth + 1 }); sidePts[side].push([x2, y2]);
+      if (depth + 1 <= 2 || zoom >= 1.5) labels.push({ n: k, x: x2, y: y2, a, depth: depth + 1 });
+      lay(k, x2, y2, a, Math.min(115, Math.max(26, share * 1.25)), depth + 1, side); }
+  };
+  const carina = [500, 210], mainEnd = { R: [420, 282], L: [600, 292] };
+  shown.forEach((d, i) => { const L = LOBES[i]; const from = mainEnd[L.side];
+    segs.push({ n: d, x1: from[0], y1: from[1], x2: L.root[0], y2: L.root[1], w: W[0], depth: 0 }); sidePts[L.side].push(L.root, from);
+    labels.push({ n: d, x: L.root[0], y: L.root[1], a: L.dir, depth: 0, lobe: L.name });
+    lay(d, L.root[0], L.root[1], L.dir, L.spread, 0, L.side); });
+  const avg = arr => arr.length ? arr.reduce((a, n) => a + prog(n), 0) / arr.length : 0;
+  const sideDom = side => shown.filter((d, i) => LOBES[i].side === side);
+  const pT = avg(shown), pR = avg(sideDom("R")), pL = avg(sideDom("L"));
+  const anyOD = side => (side ? sideDom(side) : shown).some(d => OD.has(d.id));
+  // SpO2 from all leaves of shown domains (folding ignored)
+  let tot = 0, inf = 0; for (const d of shown) for (const n of descendants(d.id)) { if (n.archived || !checkable(n) || liveKids(n.id).length) continue; tot++; if (isDone(n)) inf++; }
+  const spo = tot ? Math.round(100 * inf / tot) : null;
+  const seg = (x1, y1, x2, y2, w, p, over, n) => {
+    const xm = x1 + (x2 - x1) * p, ym = y1 + (y2 - y1) * p; const bg = n && checkable(n) && big.includes(n.id);
+    const fl = p > 0 ? `<line x1="${x1}" y1="${y1}" x2="${xm}" y2="${ym}" stroke="var(--air)" stroke-width="${w * 0.92}" stroke-linecap="round"/><line class="flow" x1="${x1}" y1="${y1}" x2="${xm}" y2="${ym}" stroke="var(--airflow)" stroke-width="${Math.max(1.2, w * 0.36)}" stroke-linecap="round" stroke-dasharray="2.5 8.5" style="animation-duration:${(2.6 - p * 1.7).toFixed(2)}s"/>` : "";
+    return `<g>${bg ? `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--accent)" stroke-opacity=".35" stroke-width="${w + 12}" stroke-linecap="round"/>` : ""}
+      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--wall)" stroke-width="${w + 3}" stroke-linecap="round"/>
+      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${over ? "var(--mucus-old)" : "var(--mucus)"}" stroke-width="${w}" stroke-linecap="round"/>${fl}
+      ${p > 0 && p < 1 ? `<circle cx="${xm}" cy="${ym}" r="${w * 0.6}" fill="${over ? "var(--mucus-old)" : "var(--mucus)"}" stroke="var(--wall)" stroke-width=".8"/>` : ""}
+      ${n ? `<line class="hit" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="transparent" stroke-width="${Math.max(w + 10, 16)}" data-act="edit" data-id="${n.id}"><title>${esc(n.title)} · ${LABEL[n.t]} · ${Math.round(p * 100)}% cleared${over ? " · overdue secretions" : ""}</title></line>` : ""}</g>`; };
+  const svgSegs = [seg(500, 20, carina[0], carina[1], 22, pT, anyOD(), null), seg(carina[0], carina[1], mainEnd.R[0], mainEnd.R[1], 17, pR, anyOD("R"), null), seg(carina[0], carina[1], mainEnd.L[0], mainEnd.L[1], 17, pL, anyOD("L"), null)]
+    .concat(segs.sort((a, b) => a.depth - b.depth).map(sg => seg(sg.x1, sg.y1, sg.x2, sg.y2, sg.w, prog(sg.n), OD.has(sg.n.id), sg.n))).join("");
+  const alv = leaves.filter(l => !l.closed).map(({ n, x, y, ang }) => { const a = ang * Math.PI / 180, c = Math.cos(a), s2 = Math.sin(a);
+    if (!checkable(n)) return `<circle cx="${x + c * 5}" cy="${y + s2 * 5}" r="3.5" fill="var(--alv-off)"/>`;
+    const on = isDone(n); const r = on ? 6.4 : 3.4; const k = on ? 1.45 : 1.6; const bg = big.includes(n.id);
+    const pts = [[1, 0], [2, -0.95], [2, 0.95], [3, 0]].map(([u, v2]) => [x + (c * u - s2 * v2) * r * k, y + (s2 * u + c * v2) * r * k]);
+    const cx = pts.reduce((q, p2) => q + p2[0], 0) / 4, cy = pts.reduce((q, p2) => q + p2[1], 0) / 4;
+    return `<g class="alvg" data-act="tick" data-id="${n.id}"><title>${esc(n.title)} · ${on ? "done, ventilated" : "tap to mark done"}</title>
+      ${bg ? `<circle cx="${cx}" cy="${cy}" r="${r * 3.3}" fill="none" stroke="var(--accent)" stroke-width="2.5"/><circle cx="${cx + r * 3.3 * .7}" cy="${cy - r * 3.3 * .7}" r="7" fill="var(--accent)"/><text x="${cx + r * 3.3 * .7}" y="${cy - r * 3.3 * .7 + .5}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:9px;font-weight:700;fill:var(--accent-ink);stroke:none">${big.indexOf(n.id) + 1}</text>` : ""}
+      <circle cx="${cx}" cy="${cy}" r="${r * 2.6}" fill="transparent"/>
+      ${pts.map(([px, py]) => `<circle cx="${px}" cy="${py}" r="${r}" fill="${on ? "var(--alv-on)" : "var(--alv-off)"}" stroke="${on ? "var(--wall)" : "none"}" stroke-width=".8"/>`).join("")}</g>`; }).join("");
+  const tg = togs.map(({ n, x, y, closed }) => { const cnt = descendants(n.id).filter(k => S.showArchived || !k.archived).length; const lab = closed ? "+" + cnt : "−"; const w = closed ? Math.max(20, 10 + lab.length * 6.5) : 18;
+    return `<g class="ltog" data-act="ltog" data-id="${n.id}" role="button" tabindex="0" aria-label="${closed ? "Open" : "Fold"} ${esc(n.title)}"><circle cx="${x}" cy="${y}" r="16" fill="transparent"/><rect x="${x - w / 2}" y="${y - 9}" width="${w}" height="18" rx="9" fill="var(--surface)" stroke="var(--wall)" stroke-width="1.3"/><text x="${x}" y="${y + .5}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:${closed ? 10 : 13}px;font-weight:700;stroke:none;fill:var(--fg)">${lab}</text></g>`; }).join("");
+  const lb = labels.map(({ n, x, y, a, depth, lobe }) => { const right = Math.cos(a * Math.PI / 180) >= 0; const off = depth === 0 ? 0 : 12; const fs = depth === 0 ? 16 : depth === 1 ? 12.5 : 11;
+    const t = n.title.length > 26 ? n.title.slice(0, 25) + "…" : n.title;
+    if (depth === 0) return `<text x="${x + (right ? 14 : -14)}" y="${y - 20}" text-anchor="${right ? "start" : "end"}" style="font-size:${fs}px;font-weight:700;fill:var(--d${n.color || 1})">${esc(t)}<tspan x="${x + (right ? 14 : -14)}" dy="15" style="font-size:10.5px;font-weight:500;fill:var(--muted)">${lobe} · ${Math.round(prog(n) * 100)}%</tspan></text>`;
+    return `<text x="${x + (right ? off : -off)}" y="${y - 6}" text-anchor="${right ? "start" : "end"}" style="font-size:${fs}px;font-weight:${depth === 1 ? 600 : 500}">${esc(t)}</text>`; }).join("");
+  const blob = side => { const h2 = hull(sidePts[side]); return h2.length > 2 ? `<polygon points="${h2.map(q => q.join(",")).join(" ")}" fill="var(--tissue)" stroke="var(--tissue)" stroke-width="64" stroke-linejoin="round"/>` : ""; };
+  const allPts = sidePts.R.concat(sidePts.L, [[500, 20], [420, 282], [600, 292]]); labels.forEach(l => allPts.push([l.x + (Math.cos(l.a * Math.PI / 180) >= 0 ? 170 : -170), l.y]));
+  const minX = Math.min(...allPts.map(q => q[0])) - 50, maxX = Math.max(...allPts.map(q => q[0])) + 50, minY = Math.min(...allPts.map(q => q[1])) - 50, maxY = Math.max(...allPts.map(q => q[1])) + 50;
+  const vw = maxX - minX, vh = maxY - minY;
+  const size = zoom ? `width:${Math.round(vw * 0.75 * zoom)}px;max-width:none;height:auto` : S.mapFull ? "width:100%;height:100%" : "width:100%;height:auto;max-height:68vh";
+  const spoc = spo == null ? "#7CE0F0" : spo >= 90 ? "#7CE0F0" : spo >= 75 ? "#F2C14E" : "#F2786A";
+  const monitor = `<div class="monitor" style="--spoc:${spoc}"><div><div class="lbl">SpO₂</div><div class="spo">${spo == null ? "--" : spo}<small>%</small></div></div>
+    <svg viewBox="0 0 200 44" preserveAspectRatio="none" aria-hidden="true"><path class="pleth" d="M0 34 C10 34 14 8 22 8 C30 8 32 26 38 26 C42 26 44 22 48 22 C54 22 58 34 66 34 C76 34 80 8 88 8 C96 8 98 26 104 26 C108 26 110 22 114 22 C120 22 124 34 132 34 C142 34 146 8 154 8 C162 8 164 26 170 26 C174 26 176 22 180 22 C186 22 190 34 200 34"/></svg>
+    <div><div class="lbl">Ventilated area</div><div class="spo" style="font-size:1.6rem;--spoc:#9BE8B8">${Math.round(pT * 100)}<small>%</small></div></div></div>`;
+  const chooser = live.length > 5 ? `<div class="card"><div class="lbl" style="margin-bottom:8px">Choose up to 5 domains for the lobes · ${pick.length} of 5</div><div style="display:flex;gap:6px;flex-wrap:wrap">${live.map(d => `<button class="pickchip" data-act="lpick" data-id="${d.id}" aria-pressed="${pick.includes(d.id)}">${esc(d.title)}</button>`).join("")}</div></div>` : "";
+  const lobeList = `<div class="lobes">${shown.map((d, i) => `<div class="lobe" style="--dc:var(--d${d.color || 1})"><span class="ringwrap">${ring(prog(d), 40, `var(--d${d.color || 1})`, false)}<span class="ri">${ic(d.icon || "leaf")}</span></span><div><b>${esc(d.title)}</b><span class="muted" style="font-size:.78rem">${LOBES[i].name} · ${Math.round(prog(d) * 100)}% cleared${OD.has(d.id) ? " · overdue secretions" : ""}</span></div></div>`).join("")}</div>`;
+  return `${monitor}
+   <div class="mapbox${S.mapFull ? " full" : ""}"><div class="maptools">
+    ${S.mapFull ? `<button class="btn small" data-act="mexp">Expand all</button><button class="btn small" data-act="mcol">Collapse all</button>` : ""}
+    <button class="icon-btn" data-act="lzoom" data-v="-1" aria-label="Zoom out" title="Zoom out" ${!zoom ? "disabled" : ""}>${ic("zout")}</button><button class="zlab mono" data-act="lfit" title="Fit the whole lung on screen">${zoom ? Math.round(zoom * 100) + "%" : "Fit"}</button><button class="icon-btn" data-act="lzoom" data-v="1" aria-label="Zoom in" title="Zoom in" ${zoom >= 4 ? "disabled" : ""}>${ic("zin")}</button>
+    ${bgBtn()}<button class="icon-btn" data-act="mfull" aria-label="${S.mapFull ? "Exit full screen" : "Full screen"}" title="${S.mapFull ? "Exit full screen" : "Full screen"}">${ic(S.mapFull ? "shrink" : "full")}</button></div>
+    <div class="mapwrap lungwrap${bgClass()}"><svg data-vw="${vw}" data-vh="${vh}" viewBox="${minX} ${minY} ${vw} ${vh}" style="${size}" role="img" aria-label="Lungs view: ${spo == null ? "no tasks yet" : spo + "% of alveoli ventilated"}">
+      <g class="breathe" style="--amp:${(0.004 + 0.02 * pT).toFixed(3)}">${blob("R")}${blob("L")}${svgSegs}${alv}${tg}${lb}</g></svg></div></div>
+   <div class="legend2"><span><i style="background:var(--mucus)"></i>Mucus: work left</span><span><i style="background:var(--mucus-old)"></i>Overdue secretions</span><span><i style="background:var(--airflow)"></i>Air reaching the mucus front</span><span><i style="background:var(--alv-on);border-radius:50%;width:10px;height:10px"></i>Done, ventilated</span><span><i style="background:var(--alv-off);border-radius:50%;width:8px;height:8px"></i>Not done</span></div>
+   <p class="muted" style="margin:0;font-size:.85rem">Every task you finish clears mucus from its airway and every airway above it. Tap an alveolus to mark it done, an airway to edit it, and − or + to fold a branch. Pinch or use the zoom buttons to read task names.</p>
+   ${lobeList}${chooser}`;
+}
+
+/* ---------- events ---------- */
+document.addEventListener("click", async e => {
+  LASTXY = [e.clientX || innerWidth / 2, e.clientY || innerHeight / 2];
+  const el = e.target.closest("[data-act]"); if (!el) return; const a = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
+  if (a === "scrim" && e.target !== el) return;
+  switch (a) {
+    case "nav": S.view = v; if (v !== "me") store.set("view", v); else S.profileId = null; S.battleId = null; S.mapFull = false; closeSheet(); render(); window.scrollTo(0, 0); break;
+    case "prof": S.prevView = S.view === "me" ? S.prevView : S.view; S.profileId = id; S.view = "me"; closeSheet(); render(); window.scrollTo(0, 0); break;
+    case "pback": S.view = S.prevView || "feed"; S.profileId = null; render(); break;
+    case "mtog": S.mapClosed.has(id) ? S.mapClosed.delete(id) : S.mapClosed.add(id); saveMap(); S.mapFocus = id; render(); break;
+    case "mexp": if (S.treeMode === "lungs") { S.lungClosed.clear(); store.set("lungClosed", []); } else { S.mapClosed.clear(); saveMap(); } render(); break;
+    case "mcol": if (S.treeMode === "lungs") { S.lungClosed = new Set(Object.values(S.tree.nodes).filter(n => n.t === "milestone" && (IDX[n.id] || []).length).map(n => n.id)); store.set("lungClosed", [...S.lungClosed]); } else collapseMap(); render(); break;
+    case "mgrid": { const o = ["plain", "lines", "dots"]; S.mapGrid = o[(o.indexOf(S.mapGrid) + 1) % 3]; store.set("mapGrid", S.mapGrid); toast("Background: " + S.mapGrid); render(); break; }
+    case "ltog": S.lungClosed.has(id) ? S.lungClosed.delete(id) : S.lungClosed.add(id); store.set("lungClosed", [...S.lungClosed]); render(); break;
+    case "mzoom": setZoom(S.mapZoom * (+v > 0 ? 1.25 : 0.8)); break;
+    case "lzoom": { const zi = zoomInfo(); if (!zi) break; const nz = zi.cur * (+v > 0 ? 1.25 : 0.8); if (+v < 0 && nz <= zi.fit * 1.02) { S.lungZoom = 0; store.set("lungZoom", 0); render(); } else setZoom(Math.max(nz, zi.fit)); break; }
+    case "lfit": S.lungZoom = 0; store.set("lungZoom", 0); render(); break;
+    case "lpick": { let pk = lungPick(); if (pk.includes(id)) pk = pk.filter(x => x !== id); else if (pk.length >= 5) { toast("The lungs have 5 lobes. Remove one first."); break; } else pk = [...pk, id]; store.set("lungPick", pk); render(); break; }
+    case "star": starNode(id); if (S.focusId) renderFocus(); break;
+    case "bigrep": { const b = bigToday().map(x => x === id ? v : x); setBig(b); closeSheet(); toast("Swapped into today's Big 2"); break; }
+    case "bigswap": setBig(bigToday().reverse()); break;
+    case "carry": { const pr = prevBig(); setBig(pr.un.map(n => n.id).slice(0, 2)); toast("Carried over"); break; }
+    case "carryno": store.set("carryNo", today()); render(); break;
+    case "mfull": S.mapFull = !S.mapFull; render(); break;
+    case "settings": settingsSheet(); break;
+    case "install": if (window.BW_INSTALL) { window.BW_INSTALL.prompt(); window.BW_INSTALL.userChoice.finally(() => { window.BW_INSTALL = null; closeSheet(); }); } break;
+    case "setmode": S.mode = v; store.set("mode", v); applyTheme(); settingsSheet(); break;
+    case "setacc": S.accent = v; store.set("accent", v); applyTheme(); settingsSheet(); break;
+    case "setsnd": S.sound = el.checked; store.set("sound", S.sound); if (S.sound) chime(false); break;
+    case "coverup": $("#coverFile").click(); break;
+    case "coverrm": SH.cover = null; $("#coverprev").innerHTML = coverPrev(null); break;
+    case "shareweek": S.draft = { kind: "post", text: "", url: "", media: [], task: null, win: null, author: "", week: weekSummary() }; S.view = "feed"; store.set("view", "feed"); render(); window.scrollTo(0, 0); break;
+    case "bgo": S.view = "battles"; S.battleId = id; render(); window.scrollTo(0, 0); break;
+    case "quotego": S.view = "feed"; S.draft.kind = "quote"; render(); window.scrollTo(0, 0); break;
+    case "react2": { const p = S.posts.find(x => x.id === id); const mine = !!(((p.reacts || {})[v] || {})[S.uid]); keepDraft(); try { await S.db.doc("posts/" + id).update({ reacts: { [v]: { [S.uid]: !mine } } }); } catch { toast("Couldn't react to that post"); } break; }
+    case "tmode": S.treeMode = v; store.set("treeMode", v); render(); break;
+    case "exp": S.expanded.has(id) ? S.expanded.delete(id) : S.expanded.add(id); saveExp(); render(); if (S.focusId) renderFocus(); break;
+    case "expall": if (S.treeMode === "lungs") { S.lungClosed.clear(); store.set("lungClosed", []); render(); break; } if (S.treeMode === "map") { S.mapClosed.clear(); saveMap(); render(); break; } Object.keys(S.tree.nodes).forEach(k => S.expanded.add(k)); saveExp(); render(); break;
+    case "collapse": if (S.treeMode === "lungs") { S.lungClosed = new Set(Object.values(S.tree.nodes).filter(n => n.t === "milestone" && (IDX[n.id] || []).length).map(n => n.id)); store.set("lungClosed", [...S.lungClosed]); render(); break; } if (S.treeMode === "map") { collapseMap(); render(); break; } S.expanded.clear(); saveExp(); render(); break;
+    case "arch": S.showArchived = el.checked; render(); break;
+    case "tick": toggleNode(id); if (S.focusId) renderFocus(); break;
+    case "add": if (!S.ready) return; nodeSheet(null, id || null); break;
+    case "edit": nodeSheet(id); break;
+    case "focus": openFocus(id); break;
+    case "unfocus": closeFocus(); break;
+    case "close": case "scrim": closeSheet(); break;
+    case "examples": loadExamples(); break;
+    case "clearex": clearExamples(); break;
+    case "mv": moveNode(id, +v); closeSheet(); break;
+    case "archive": { const n = node(id); n.archived = !n.archived; closeSheet(); commit(); toast(n.archived ? "Archived. Turn on Show archived to see it." : "Restored"); break; }
+    case "delask": $("#delconfirm").hidden = false; $("#delwrap").hidden = true; break;
+    case "delno": $("#delconfirm").hidden = true; $("#delwrap").hidden = false; break;
+    case "del": closeSheet(); deleteNode(id); toast("Deleted"); break;
+    case "sharetask": { const n = node(id); S.draft = { kind: "post", text: "", url: "", media: [], win: null, week: null, author: "", task: { title: n.title, type: LABEL[n.t], path: ancestors(n).map(x => x.title).join(" › "), color: domainOf(n)?.color || 1 } }; closeSheet(); if (S.focusId) closeFocus(); S.view = "feed"; render(); window.scrollTo(0, 0); break; }
+    case "day": S.hmSel = S.hmSel === v ? null : v; render(); break;
+    case "mon": if (+v === 0) { S.hmY = new Date().getFullYear(); S.hmM = new Date().getMonth(); } else { const d = new Date(S.hmY, S.hmM + +v, 1); S.hmY = d.getFullYear(); S.hmM = d.getMonth(); } S.hmSel = null; render(); break;
+    case "export": doExport(); break;
+    case "import": $("#importFile").click(); break;
+    case "bnew": battleSheet(); break;
+    case "bopen": S.battleId = id; render(); window.scrollTo(0, 0); break;
+    case "bback": S.battleId = null; render(); break;
+    case "bjoin": try { await S.db.doc("battles/" + id).update({ members: { [S.uid]: { n: 0, at: Date.now() } } }); toast("You're in. Link tasks to this battle to score."); } catch { toast("Couldn't join. You may need Contributor access."); } break;
+    case "bdel": if (el.dataset.confirm) { try { await S.db.doc("battles/" + id).delete(); S.battleId = null; render(); toast("Battle deleted"); } catch { toast("Couldn't delete"); } } else { el.dataset.confirm = "1"; el.textContent = "Tap again to delete for everyone"; } break;
+    case "react": sendChat(v); break;
+    case "sharewin": { const b = S.battles.find(x => x.id === id); const st = battleState(b); const me = st.ms.find(m => m.u === S.uid);
+      S.draft = { kind: "post", text: "", url: "", media: [], task: null, week: null, author: "", win: { text: `${b.title}: ${st.winner === S.uid ? "I won!" : b.mode === "team" ? `Team reached ${st.team} of ${b.goal} ${b.unit}` : `Finished with ${me ? me.n : 0} ${b.unit}`}` } }; S.view = "feed"; S.battleId = null; render(); window.scrollTo(0, 0); break; }
+    case "kind": keepDraft(); S.draft.kind = v; render(); break;
+    case "dclr": keepDraft(); S.draft[v] = null; render(); break;
+    case "dmrm": keepDraft(); S.draft.media.splice(+v, 1); render(); break;
+    case "addmedia": keepDraft(); $("#mediaFile").click(); break;
+    case "publish": publishPost(); break;
+    case "ftab": keepDraft(); S.feedTab = v; render(); break;
+    case "like": { const p = S.posts.find(x => x.id === id); const liked = !!(p.likes || {})[S.uid]; keepDraft(); try { await S.db.doc("posts/" + id).update({ likes: { [S.uid]: !liked } }); } catch { toast("Couldn't like that post"); } break; }
+    case "pcom": keepDraft(); S.openPost = S.openPost === id ? null : id; render(); break;
+    case "pdel": if (el.dataset.confirm) { try { await S.db.doc("posts/" + id).delete(); toast("Post deleted"); } catch { toast("Couldn't delete"); } } else { el.dataset.confirm = "1"; el.innerHTML = "Delete?"; el.style.width = "auto"; el.style.padding = "0 8px"; } break;
+    case "follow": { keepDraft(); const f = { ...S.follows }; f[id] ? delete f[id] : f[id] = true; S.follows = f; render(); try { await followRef.set({ ids: f }); } catch { toast("Couldn't update who you follow"); } break; }
+    case "tplay": T.running ? pauseTimer() : startTimer(); break;
+    case "treset": pauseTimer(); T.mode = "work"; T.left = T.len = T.preset * 60; renderFocus(); break;
+    case "tpreset": pauseTimer(); T.preset = +v; T.mode = "work"; T.left = T.len = T.preset * 60; renderFocus(); break;
+  }
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") { if (!$("#sheet").hidden) closeSheet(); else if (S.focusId) closeFocus(); else if (S.mapFull) { S.mapFull = false; render(); } } if ((e.key === "Enter" || e.key === " ") && e.target.matches("[role=button][data-act]")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); } });
+document.addEventListener("change", e => { if (e.target.id === "hmM" || e.target.id === "hmY") { S.hmM = +$("#hmM").value; S.hmY = +$("#hmY").value; S.hmSel = null; render(); } });
+document.addEventListener("input", e => { if (e.target.id === "durl") { S.draft.url = e.target.value.trim(); } });
+document.addEventListener("submit", async e => {
+  if (e.target.id === "chatform") { e.preventDefault(); const i = $("#chatin"); const t = i.value.trim(); if (t) { i.value = ""; sendChat(t); } }
+  if (e.target.id === "comform") { e.preventDefault(); const i = $("#comin"); const t = i.value.trim(); if (!t) return; keepDraft(); try { await S.db.collection("posts/" + e.target.dataset.id + "/comments").add({ uid: S.uid, text: t, at: Date.now() }); } catch { toast("Couldn't post your comment"); } }
+});
+async function sendChat(t) { try { await S.db.collection("battles/" + S.battleId + "/chat").add({ uid: S.uid, text: t.slice(0, 300), at: Date.now() }); } catch { toast("Couldn't send"); } }
+function keepDraft() { const ta = $("#dtext"); if (ta) S.draft.text = ta.value; const au = $("#dauthor"); if (au) S.draft.author = au.value; const u = $("#durl"); if (u) S.draft.url = u.value.trim(); }
+$("#mediaFile").addEventListener("change", async e => {
+  const files = [...e.target.files]; e.target.value = ""; if (!files.length || !S.assets) return; S.uploading = true; render();
+  for (const f of files) { if (f.size > 20 * 1024 * 1024) { toast(f.name + " is over 20 MB"); continue; }
+    try { const r = await S.assets.upload(f); S.draft.media.push({ id: r.id, url: r.url, type: r.contentType || f.type }); } catch (err) { toast(err && err.code === "unsupported_type" ? "That file type isn't supported" : err && err.code === "too_large" ? "That file is too large" : "Upload failed. Try again."); } }
+  S.uploading = false; render();
+});
+async function doExport() {
+  const data = JSON.stringify({ app: "Branchwork", exported: new Date().toISOString(), tree: S.tree, log: S.log }, null, 1);
+  if (!S.downloads) { toast("Saving files isn't available here"); return; }
+  try { await S.downloads.save({ filename: `branchwork-backup-${today()}.json`, data }); } catch (e) { if (!e || e.code !== "declined") toast("Couldn't save the backup"); }
+}
+$("#importFile").addEventListener("change", async e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  try { const j = JSON.parse(await f.text()); if (!j.tree || typeof j.tree.nodes !== "object") throw 0; S.tree = { nodes: j.tree.nodes, bigHist: j.tree.bigHist || {} }; if (j.log) { S.log = { focusNode: j.log.focusNode || {}, focusDay: j.log.focusDay || {} }; logSaver.touch(); } commit(); toast("Backup restored"); }
+  catch { toast("That file isn't a Branchwork backup"); } });
+/* ---------- pinch zoom ---------- */
+function zoomInfo() { const svg = $(".mapwrap svg"); if (!svg) return null; const lungs = S.treeMode === "lungs";
+  if (!lungs) return { lungs, svg, cur: S.mapZoom, fit: 0.4 };
+  const vw = +svg.dataset.vw || 1, vh = +svg.dataset.vh || 1; const rc = svg.getBoundingClientRect(); const fit = Math.min(rc.width / vw, rc.height / vh) / 0.75;
+  return { lungs, svg, cur: S.lungZoom || fit, fit: S.lungZoom ? Math.min(fit, 1) : fit }; }
+function setZoom(z, mx, my) {
+  const zi = zoomInfo(); const mw = $(".mapwrap"); if (!zi || !mw) return;
+  z = Math.max(zi.lungs ? 0.3 : 0.4, Math.min(zi.lungs ? 4 : 2.5, z)); const ratio = z / zi.cur; const r = mw.getBoundingClientRect();
+  const ox = (mx == null ? r.left + r.width / 2 : mx) - r.left, oy = (my == null ? r.top + r.height / 2 : my) - r.top;
+  const sl = (mw.scrollLeft + ox) * ratio - ox, st = (mw.scrollTop + oy) * ratio - oy;
+  if (zi.lungs) { S.lungZoom = +z.toFixed(3); store.set("lungZoom", S.lungZoom); } else { S.mapZoom = +z.toFixed(3); store.set("mapZoom", S.mapZoom); }
+  render(); const m2 = $(".mapwrap"); if (m2) { m2.scrollLeft = Math.max(0, sl); m2.scrollTop = Math.max(0, st); }
+}
+let PZ = null, WZ = null;
+document.addEventListener("touchstart", e => { if (e.touches.length !== 2) return; const mw = e.target.closest && e.target.closest(".mapwrap"); if (!mw) return; const zi = zoomInfo(); if (!zi) return;
+  const [a, b] = e.touches; PZ = { d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, mx: (a.clientX + b.clientX) / 2, my: (a.clientY + b.clientY) / 2, cur: zi.cur, svg: zi.svg, ratio: 1 };
+  const r = zi.svg.getBoundingClientRect(); zi.svg.style.transformOrigin = `${PZ.mx - r.left}px ${PZ.my - r.top}px`; }, { passive: true });
+document.addEventListener("touchmove", e => { if (!PZ || e.touches.length !== 2) return; e.preventDefault(); const [a, b] = e.touches;
+  PZ.ratio = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / PZ.d0; PZ.svg.style.transform = `scale(${PZ.ratio})`; }, { passive: false });
+const endPinch = e => { if (!PZ || e.touches.length >= 2) return; const p = PZ; PZ = null; p.svg.style.transform = ""; if (Math.abs(p.ratio - 1) > 0.03) setZoom(p.cur * p.ratio, p.mx, p.my); };
+document.addEventListener("touchend", endPinch); document.addEventListener("touchcancel", endPinch);
+document.addEventListener("gesturestart", e => { if (e.target.closest && e.target.closest(".mapwrap")) e.preventDefault(); });
+document.addEventListener("wheel", e => { if (!e.ctrlKey) return; const mw = e.target.closest && e.target.closest(".mapwrap"); if (!mw) return; e.preventDefault();
+  if (!WZ) { const zi = zoomInfo(); if (!zi) return; WZ = { f: 1, cur: zi.cur, mx: e.clientX, my: e.clientY }; }
+  WZ.f *= Math.exp(-e.deltaY * 0.01); clearTimeout(WZ.t); WZ.t = setTimeout(() => { const w = WZ; WZ = null; setZoom(w.cur * w.f, w.mx, w.my); }, 140); }, { passive: false });
+function afterRender() { watchChat(); watchComments(); watchProfile(); checkAchievements(); }
+$("#coverFile").addEventListener("change", async e => { const f = e.target.files[0]; e.target.value = ""; if (!f || !S.assets) return;
+  const pv = $("#coverprev"); if (pv) pv.innerHTML = `<span class="muted">Uploading…</span>`;
+  try { const r = await S.assets.upload(f); SH.cover = { id: r.id, url: r.url }; } catch { toast("Couldn't upload that photo"); }
+  const p2 = $("#coverprev"); if (p2) p2.innerHTML = coverPrev(SH.cover); });
+setInterval(() => { if (S.view === "battles" && S.battleId) { const b = S.battles.find(x => x.id === S.battleId); const l = $("#bleft"); if (b && l) l.textContent = left(b); } }, 30000);
+document.addEventListener("visibilitychange", () => { if (document.hidden) { flushFocus(); } });
+applyTheme();
+boot();
+})();
+</script>
+
+</body>
+</html>
