@@ -321,6 +321,13 @@ h1{font-size:1.7rem} h2{font-size:1.25rem} h3{font-size:1.02rem}
 /* big 2 */
 .row.big{background:color-mix(in srgb,var(--accent) 9%,var(--surface));box-shadow:inset 4px 0 0 var(--accent)}
 .chip.bigc{background:var(--accent);color:var(--accent-ink)}
+.chip.bigin{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+.chip.bigin svg{width:11px;height:11px}
+.bigstrip{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-radius:12px;border:1px dashed color-mix(in srgb,var(--warn) 55%,var(--line));background:color-mix(in srgb,var(--warn) 7%,var(--surface))}
+.bigstrip .lbl{color:var(--warn)}
+.bigstrip .lbl svg{width:14px;height:14px}
+.bigstrip .btn{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bigstrip .btn.bdone{text-decoration:line-through;color:var(--muted)}
 .star{color:var(--muted)}
 .star[aria-pressed="true"]{color:var(--warn)}
 .bigcard{border:2px solid var(--accent);border-radius:16px;padding:14px;background:color-mix(in srgb,var(--accent) 6%,var(--surface));display:flex;flex-direction:column;gap:10px}
@@ -589,11 +596,12 @@ function rowHTML(n, depth, opts = {}) {
   const late = n.due && n.due < today() && p < 1;
   const cb = checkable(n) ? `<button class="cb" role="checkbox" aria-checked="${p >= 1 ? "true" : p > 0 ? "mixed" : "false"}" aria-label="Mark ${esc(n.title)} done" data-act="tick" data-id="${n.id}">${ic("check")}</button>` : ring(p, 30, dcolor(n));
   const bk = checkable(n) ? bigRank(n.id) : 0;
-  let h = `<div class="row${dn ? " done" : ""}${bk ? " big" : ""}" style="--depth:${depth}">
+  const inside = !open && bigInside(n.id);
+  let h = `<div class="row${dn ? " done" : ""}${bk ? " big" : ""}" data-row="${n.id}" style="--depth:${depth}">
     <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show children" data-act="exp" data-id="${n.id}">${ic("chev")}</button>
     ${cb}
     <div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b>${n.desc ? `<small>${esc(n.desc.split("\n")[0])}</small>` : ""}
-    <span class="meta">${bk ? `<span class="chip bigc">Big 2 · #${bk}</span>` : ""}<span class="chip type">${LABEL[n.t]}</span>${n.ex ? `<span class="chip ex">Example</span>` : ""}${n.rec === "daily" ? `<span class="chip">Daily</span>` : ""}${n.due ? `<span class="chip${late ? " late" : ""}">${late ? "Late · " : ""}${fmtDate(n.due)}</span>` : ""}${n.archived ? `<span class="chip">Archived</span>` : ""}</span></div>
+    <span class="meta">${bk ? `<span class="chip bigc">Big 2 · #${bk}</span>` : ""}${inside ? `<span class="chip bigin">${ic("star", true)}Big 2 inside</span>` : ""}<span class="chip type">${LABEL[n.t]}</span>${n.ex ? `<span class="chip ex">Example</span>` : ""}${n.rec === "daily" ? `<span class="chip">Daily</span>` : ""}${n.due ? `<span class="chip${late ? " late" : ""}">${late ? "Late · " : ""}${fmtDate(n.due)}</span>` : ""}${n.archived ? `<span class="chip">Archived</span>` : ""}</span></div>
     <span class="row-actions">${n.t !== "subtask" ? `<button class="icon-btn" title="Add ${LABEL[childType(n.t)].toLowerCase()}" aria-label="Add ${LABEL[childType(n.t)].toLowerCase()}" data-act="add" data-id="${n.id}">${ic("plus")}</button>` : ""}
     ${checkable(n) ? starBtn(n) : ""}<button class="icon-btn" title="Focus" aria-label="Focus on ${esc(n.title)}" data-act="focus" data-id="${n.id}">${ic("focus")}</button></span></div>`;
   if (open) for (const k of ks) h += rowHTML(k, depth + 1, opts);
@@ -604,7 +612,7 @@ function domainBlock(d, opts = {}) {
   let h = `<section class="dom" style="--dc:var(--d${d.color || 1})">${d.cover && d.cover.url ? `<img class="cover" src="${esc(d.cover.url)}" alt="" loading="lazy">` : ""}<div class="dom-head">
     <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show projects" data-act="exp" data-id="${d.id}">${ic("chev")}</button>
     <span class="ringwrap">${ring(p, 44, `var(--d${d.color || 1})`, false)}<span class="ri">${ic(d.icon || "leaf")}</span></span>
-    <div class="t" data-act="edit" data-id="${d.id}">${esc(d.title)} ${d.ex ? `<span class="chip ex">Example</span>` : ""}<div class="muted" style="font-family:var(--f-body);font-weight:400;font-size:.82rem"><span class="mono">${Math.round(p * 100)}%</span> · ${ks.length} project${ks.length === 1 ? "" : "s"}${d.desc ? " · " + esc(d.desc.split("\n")[0]) : ""}</div></div>
+    <div class="t" data-act="edit" data-id="${d.id}">${esc(d.title)} ${d.ex ? `<span class="chip ex">Example</span>` : ""}${!open && bigInside(d.id) ? `<span class="chip bigin">${ic("star", true)}Big 2 inside</span>` : ""}<div class="muted" style="font-family:var(--f-body);font-weight:400;font-size:.82rem"><span class="mono">${Math.round(p * 100)}%</span> · ${ks.length} project${ks.length === 1 ? "" : "s"}${d.desc ? " · " + esc(d.desc.split("\n")[0]) : ""}</div></div>
     <button class="icon-btn" title="Add project" aria-label="Add project" data-act="add" data-id="${d.id}">${ic("plus")}</button>
     <button class="icon-btn" title="Focus" aria-label="Focus on ${esc(d.title)}" data-act="focus" data-id="${d.id}">${ic("focus")}</button></div>`;
   if (open) for (const k of ks) h += rowHTML(k, 1, opts);
@@ -623,9 +631,11 @@ function viewTree() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">${hasEx ? `<button class="btn small" data-act="clearex">Clear examples</button>` : ""}
     <button class="btn small" data-act="expall">Expand all</button><button class="btn small" data-act="collapse">Collapse all</button>
     <button class="btn small" data-act="export">${ic("down")}Back up</button><button class="btn small" data-act="import">${ic("up")}Restore</button></div></div>`;
-  if (S.treeMode === "map") return head + tools + viewMap(ds);
-  if (S.treeMode === "lungs") return head + tools + viewLungs(ds);
-  return head + tools + `<div class="tree">${ds.map(d => domainBlock(d)).join("")}</div>`;
+  const bt = bigToday().map(node);
+  const strip = `<div class="bigstrip"><span class="lbl" style="display:inline-flex;gap:6px;align-items:center">${ic("star", true)}Today's Big 2</span>${bt.length ? bt.map((n, i) => `<button class="btn small${isDone(n) || prog(n) >= 1 ? " bdone" : ""}" data-act="bigshow" data-id="${n.id}"><b>#${i + 1}</b> ${esc(n.title.length > 30 ? n.title.slice(0, 29) + "…" : n.title)}</button>`).join("") : `<span class="muted" style="font-size:.85rem">Tap ☆ on any task or subtask to pick your 2 most important for today.</span>`}</div>`;
+  if (S.treeMode === "map") return head + tools + strip + viewMap(ds);
+  if (S.treeMode === "lungs") return head + tools + strip + viewLungs(ds);
+  return head + tools + strip + `<div class="tree">${ds.map(d => domainBlock(d)).join("")}</div>`;
 }
 function viewMap(ds) {
   const W = 190, H = 34, GX = 50, GY = 10, TOP = 48; let y = TOP; const items = [], links = [];
@@ -1155,6 +1165,7 @@ function checkAchievements() {
 
 /* ---------- big 2 ---------- */
 const bigToday = () => ((S.tree.bigHist || {})[today()] || []).filter(id => node(id));
+const bigInside = id => bigToday().some(b => { const n = node(b); return n && ancestors(n).some(a => a.id === id); });
 const bigRank = id => { const i = bigToday().indexOf(id); return i < 0 ? 0 : i + 1; };
 const starBtn = n => { const r = bigRank(n.id); return `<button class="icon-btn star" aria-pressed="${!!r}" title="${r ? "Remove from today's Big 2" : "Make it one of today's Big 2"}" aria-label="${r ? "Remove from Big 2" : "Add to Big 2"}" data-act="star" data-id="${n.id}">${ic("star", !!r)}</button>`; };
 function setBig(arr) { const h = { ...(S.tree.bigHist || {}) }; h[today()] = arr; const cut = addDays(today(), -400); for (const k in h) if (k < cut) delete h[k]; S.tree.bigHist = h; commit(); }
@@ -1299,6 +1310,8 @@ document.addEventListener("click", async e => {
     case "lzoom": { const zi = zoomInfo(); if (!zi) break; const nz = zi.cur * (+v > 0 ? 1.25 : 0.8); if (+v < 0 && nz <= zi.fit * 1.02) { S.lungZoom = 0; store.set("lungZoom", 0); render(); } else setZoom(Math.max(nz, zi.fit)); break; }
     case "lfit": S.lungZoom = 0; store.set("lungZoom", 0); render(); break;
     case "lpick": { let pk = lungPick(); if (pk.includes(id)) pk = pk.filter(x => x !== id); else if (pk.length >= 5) { toast("The lungs have 5 lobes. Remove one first."); break; } else pk = [...pk, id]; store.set("lungPick", pk); render(); break; }
+    case "bigshow": { const n = node(id); if (!n) break; ancestors(n).forEach(a => S.expanded.add(a.id)); saveExp(); S.treeMode = "list"; store.set("treeMode", "list"); render();
+      const r = document.querySelector(`.row[data-row="${id}"]`); if (r) { r.scrollIntoView({ block: "center", behavior: "smooth" }); r.animate && r.animate([{ outline: "3px solid var(--accent)" }, { outline: "3px solid transparent" }], { duration: 1600 }); } break; }
     case "star": starNode(id); if (S.focusId) renderFocus(); break;
     case "bigrep": { const b = bigToday().map(x => x === id ? v : x); setBig(b); closeSheet(); toast("Swapped into today's Big 2"); break; }
     case "bigswap": setBig(bigToday().reverse()); break;
