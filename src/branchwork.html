@@ -361,7 +361,7 @@ const addDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); r
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const fmtDate = s => { if (!s) return ""; const d = parseYmd(s); return d.getDate() + " " + MONTHS[d.getMonth()].slice(0, 3); };
 const ago = t => { const s = (Date.now() - t) / 1000; if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m ago"; if (s < 86400) return Math.floor(s / 3600) + "h ago"; if (s < 86400 * 7) return Math.floor(s / 86400) + "d ago"; return fmtDate(ymd(t)); };
-const TYPES = ["domain", "milestone", "project", "task", "subtask"];
+const TYPES = ["domain", "project", "milestone", "task", "subtask"];
 const LABEL = {domain:"Domain", milestone:"Milestone", project:"Project", task:"Task", subtask:"Subtask"};
 const childType = t => TYPES[TYPES.indexOf(t) + 1];
 const checkable = n => n.t === "task" || n.t === "subtask";
@@ -420,6 +420,10 @@ const S = {
   sound: store.get("sound", true), mode: store.get("mode", "system"), accent: store.get("accent", "moss"), profileId: null, prevView: "feed", pubProf: {},
 };
 let IDX = {}, MEMO = {}, EVENTS = null;
+function normalizeTypes() {
+  let changed = false; const walk = (p, depth) => { for (const n of Object.values(S.tree.nodes)) if ((n.p || null) === p) { const t = TYPES[Math.min(depth, 4)]; if (n.t !== t) { n.t = t; changed = true; } walk(n.id, depth + 1); } };
+  walk(null, 0); return changed;
+}
 function reindex() {
   IDX = {}; MEMO = {}; EVENTS = null;
   for (const n of Object.values(S.tree.nodes)) (IDX[n.p || "root"] ||= []).push(n);
@@ -485,7 +489,7 @@ async function boot() {
   treeRef.onSnapshot(s => {
     if (treeSaver.pending || s.metadata.hasPendingWrites) { if (!gotTree) { gotTree = true; S.ready = true; render(); } return; }
     const d = s.exists ? s.data() : null; S.tree = { nodes: JSON.parse(JSON.stringify((d && d.nodes) || {})), bigHist: JSON.parse(JSON.stringify((d && d.bigHist) || {})) };
-    if (!gotTree) { gotTree = true; S.ready = true; } reindex(); render(); if (!S.focusId) {} else renderFocus();
+    if (!gotTree) { gotTree = true; S.ready = true; } if (normalizeTypes()) treeSaver.touch(); reindex(); render(); if (!S.focusId) {} else renderFocus();
   }, () => { S.offline = true; S.ready = true; render(); });
   logRef.onSnapshot(s => { if (logSaver.pending || s.metadata.hasPendingWrites) return; const d = s.exists ? s.data() : {}; S.log = { focusNode: { ...(d.focusNode || {}) }, focusDay: { ...(d.focusDay || {}) } }; if (S.view === "dash") render(); });
   followRef.onSnapshot(s => { S.follows = { ...((s.exists && s.data().ids) || {}) }; if (S.view === "feed") render(); });
@@ -535,18 +539,18 @@ const saveExp = () => store.set("exp", [...S.expanded]);
 function loadExamples() {
   const e = { ex: true };
   const a = addNode(null, "domain", { ...e, title: "Anaesthesia", color: 1, desc: "Exam prep and clinical reading" });
-  const m = addNode(a, "milestone", { ...e, title: "Finish Miller cardiac section", due: addDays(today(), 45) });
-  reindex(); const p = addNode(m, "project", { ...e, title: "Cardiovascular pharmacology" });
+  const m = addNode(a, "project", { ...e, title: "Read Miller" });
+  reindex(); const p = addNode(m, "milestone", { ...e, title: "Cardiac section done", due: addDays(today(), 45) });
   reindex(); const t1 = addNode(p, "task", { ...e, title: "Read inotropes chapter", desc: "Mechanism, doses, receptor profile" });
   reindex(); addNode(t1, "subtask", { ...e, title: "Make notes" }); reindex(); addNode(t1, "subtask", { ...e, title: "Make Anki cards" });
   reindex(); addNode(p, "task", { ...e, title: "Viva practice: vasopressors", due: today() });
   reindex(); const f = addNode(null, "domain", { ...e, title: "Fitness", color: 2 });
-  reindex(); const fm = addNode(f, "milestone", { ...e, title: "6-day workout habit", due: addDays(today(), 60) });
-  reindex(); const fp = addNode(fm, "project", { ...e, title: "Weekly routine" });
+  reindex(); const fm = addNode(f, "project", { ...e, title: "6-day workout habit" });
+  reindex(); const fp = addNode(fm, "milestone", { ...e, title: "First month complete", due: addDays(today(), 30) });
   reindex(); addNode(fp, "task", { ...e, title: "Workout", rec: "daily" });
   reindex(); const ai = addNode(null, "domain", { ...e, title: "Learning AI", color: 5 });
-  reindex(); const am = addNode(ai, "milestone", { ...e, title: "Build my first app", due: addDays(today(), 30) });
-  reindex(); const ap = addNode(am, "project", { ...e, title: "Branchwork testing" });
+  reindex(); const am = addNode(ai, "project", { ...e, title: "Build my first app" });
+  reindex(); const ap = addNode(am, "milestone", { ...e, title: "Branchwork tested", due: addDays(today(), 14) });
   reindex(); addNode(ap, "task", { ...e, title: "Test every section and list changes" });
   [a, m, p, t1, f, fm, fp, ai, am, ap].forEach(i => S.expanded.add(i)); saveExp();
   commit(); toast("Example branches added");
@@ -598,21 +602,21 @@ function rowHTML(n, depth, opts = {}) {
 function domainBlock(d, opts = {}) {
   const p = prog(d); const ks = kids(d.id); const open = S.expanded.has(d.id) || opts.allOpen;
   let h = `<section class="dom" style="--dc:var(--d${d.color || 1})">${d.cover && d.cover.url ? `<img class="cover" src="${esc(d.cover.url)}" alt="" loading="lazy">` : ""}<div class="dom-head">
-    <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show milestones" data-act="exp" data-id="${d.id}">${ic("chev")}</button>
+    <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show projects" data-act="exp" data-id="${d.id}">${ic("chev")}</button>
     <span class="ringwrap">${ring(p, 44, `var(--d${d.color || 1})`, false)}<span class="ri">${ic(d.icon || "leaf")}</span></span>
-    <div class="t" data-act="edit" data-id="${d.id}">${esc(d.title)} ${d.ex ? `<span class="chip ex">Example</span>` : ""}<div class="muted" style="font-family:var(--f-body);font-weight:400;font-size:.82rem"><span class="mono">${Math.round(p * 100)}%</span> · ${ks.length} milestone${ks.length === 1 ? "" : "s"}${d.desc ? " · " + esc(d.desc.split("\n")[0]) : ""}</div></div>
-    <button class="icon-btn" title="Add milestone" aria-label="Add milestone" data-act="add" data-id="${d.id}">${ic("plus")}</button>
+    <div class="t" data-act="edit" data-id="${d.id}">${esc(d.title)} ${d.ex ? `<span class="chip ex">Example</span>` : ""}<div class="muted" style="font-family:var(--f-body);font-weight:400;font-size:.82rem"><span class="mono">${Math.round(p * 100)}%</span> · ${ks.length} project${ks.length === 1 ? "" : "s"}${d.desc ? " · " + esc(d.desc.split("\n")[0]) : ""}</div></div>
+    <button class="icon-btn" title="Add project" aria-label="Add project" data-act="add" data-id="${d.id}">${ic("plus")}</button>
     <button class="icon-btn" title="Focus" aria-label="Focus on ${esc(d.title)}" data-act="focus" data-id="${d.id}">${ic("focus")}</button></div>`;
   if (open) for (const k of ks) h += rowHTML(k, 1, opts);
   return h + `</section>`;
 }
 function viewTree() {
   const ds = kids(null); const hasEx = Object.values(S.tree.nodes).some(n => n.ex);
-  const head = `<div class="topbar"><div><h1>Your branches</h1><div class="sub">Domain › Milestone › Project › Task › Subtask. Progress rolls up as you tick things off.</div></div>
+  const head = `<div class="topbar"><div><h1>Your branches</h1><div class="sub">Domain › Project › Milestone › Task › Subtask. Progress rolls up as you tick things off.</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <div class="seg" role="group" aria-label="Tree layout"><button data-act="tmode" data-v="list" aria-pressed="${S.treeMode === "list"}">List</button><button data-act="tmode" data-v="map" aria-pressed="${S.treeMode === "map"}">Map</button><button data-act="tmode" data-v="lungs" aria-pressed="${S.treeMode === "lungs"}">Lungs</button></div>
       <button class="btn primary" data-act="add" data-id="">${ic("plus")}Domain</button><button class="icon-btn" data-act="settings" aria-label="Settings" title="Settings">${ic("gear")}</button></div></div>`;
-  if (!ds.length) return head + `<div class="card empty"><h2>Start your first branch</h2><p>Add a domain such as Anaesthesia, Fitness or Side hustle. Then add milestones, projects, tasks and subtasks under it.</p>
+  if (!ds.length) return head + `<div class="card empty"><h2>Start your first branch</h2><p>Add a domain such as Anaesthesia, Fitness or Side hustle. Then add projects, milestones, tasks and subtasks under it.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center"><button class="btn primary" data-act="add" data-id="">${ic("plus")}Add a domain</button><button class="btn" data-act="examples">Load example branches</button></div></div>`;
   const tools = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between">
     <label class="check"><input type="checkbox" id="showArch" data-act="arch" ${S.showArchived ? "checked" : ""}> Show archived</label>
@@ -751,7 +755,7 @@ function viewDash() {
   <div class="card"><div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><div class="lvl-badge" aria-hidden="true">${sx.level}</div>
     <div style="flex:1;min-width:180px"><div class="lbl">Level ${sx.level}</div><div class="bar" style="height:12px;margin:6px 0"><i style="width:${100 * (sx.xp - sx.lo) / (sx.hi - sx.lo)}%"></i></div><div class="muted mono" style="font-size:.78rem">${sx.xp} XP · ${sx.hi - sx.xp} XP to level ${sx.level + 1}</div></div>
     <button class="btn small" data-act="nav" data-v="me">${ic("user")}Profile</button><button class="icon-btn" data-act="settings" aria-label="Settings" title="Settings">${ic("gear")}</button></div>
-    <p class="muted" style="margin:10px 0 0;font-size:.78rem">Task 10 XP · subtask or daily habit 5 · project 25 · milestone 50 · focus 1 per minute · Big 2 bonus 15 · battle win 100</p></div>
+    <p class="muted" style="margin:10px 0 0;font-size:.78rem">Task 10 XP · subtask or daily habit 5 · milestone 25 · project 50 · focus 1 per minute · Big 2 bonus 15 · battle win 100</p></div>
   <div class="tiles">
     <div class="tile"><div class="lbl">Current streak</div><div class="v">${st.cur}<small>day${st.cur === 1 ? "" : "s"}</small></div><div class="sub2">Freeze ${st.usedThisWeek ? "used this week" : "ready this week"}</div></div>
     <div class="tile"><div class="lbl">Best streak</div><div class="v">${st.best}<small>day${st.best === 1 ? "" : "s"}</small></div></div>
@@ -924,7 +928,7 @@ function nodeSheet(id, parentId) {
   const ks = editing ? kids(id, true) : [];
   openSheet(`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px"><div style="min-width:0"><div class="lbl">${editing ? "Edit" : "New"} ${LABEL[t].toLowerCase()}</div>${path ? `<div class="muted" style="font-size:.82rem;overflow-wrap:anywhere">${esc(path)}</div>` : ""}</div><button class="icon-btn" aria-label="Close" data-act="close">${ic("x")}</button></div>
     <form id="nform" style="display:flex;flex-direction:column;gap:12px">
-    <div class="field"><label class="lbl" for="f-title">Heading</label><input type="text" id="f-title" maxlength="140" required value="${esc(v.title)}" placeholder="${t === "domain" ? "e.g. Anaesthesia" : t === "milestone" ? "e.g. Finish Miller by March" : t === "project" ? "e.g. Cardiac chapters" : t === "task" ? "e.g. Read chapter 25" : "e.g. Make notes"}"></div>
+    <div class="field"><label class="lbl" for="f-title">Heading</label><input type="text" id="f-title" maxlength="140" required value="${esc(v.title)}" placeholder="${t === "domain" ? "e.g. Anaesthesia" : t === "project" ? "e.g. Read Miller" : t === "milestone" ? "e.g. Cardiac section done by March" : t === "task" ? "e.g. Read chapter 25" : "e.g. Make notes"}"></div>
     <div class="field"><label class="lbl" for="f-desc">Description</label><textarea id="f-desc" maxlength="4000" placeholder="Notes, links, what done looks like">${esc(v.desc)}</textarea></div>
     <div class="frow">${t !== "domain" ? `<div class="field"><label class="lbl" for="f-due">${t === "milestone" ? "Target date" : "Due date"}</label><input type="date" id="f-due" value="${esc(v.due)}"></div>` : ""}
       ${checkable({ t }) ? `<div class="field"><label class="lbl" for="f-rec">Repeats</label><select id="f-rec"><option value="none" ${v.rec !== "daily" ? "selected" : ""}>Does not repeat</option><option value="daily" ${v.rec === "daily" ? "selected" : ""}>Every day (habit)</option></select></div>` : ""}</div>
@@ -1027,7 +1031,7 @@ function stats() {
   let xp = 0; for (const e of ev) xp += (e.n.t === "subtask" || e.n.rec === "daily") ? 5 : 10;
   const bs2 = bigStats(); xp += bs2.doneCount * 15;
   let msDone = 0, prDone = 0;
-  for (const n of Object.values(S.tree.nodes)) if ((n.t === "milestone" || n.t === "project") && liveKids(n.id).length && prog(n) >= 1) { if (n.t === "milestone") { msDone++; xp += 50; } else { prDone++; xp += 25; } }
+  for (const n of Object.values(S.tree.nodes)) if ((n.t === "milestone" || n.t === "project") && liveKids(n.id).length && prog(n) >= 1) { if (n.t === "milestone") { msDone++; xp += 25; } else { prDone++; xp += 50; } }
   const focusMin = Object.values(S.log.focusDay || {}).reduce((a, b) => a + b, 0); xp += focusMin;
   let won = 0; for (const b of S.battles) { if (!S.uid || !(b.members || {})[S.uid]) continue; const bs = battleState(b); if (b.mode === "team" ? bs.team >= b.goal : bs.winner === S.uid) { won++; xp += b.mode === "team" ? 50 : 100; } }
   const level = Math.floor(Math.sqrt(xp / 50)) + 1;
@@ -1288,7 +1292,7 @@ document.addEventListener("click", async e => {
     case "pback": S.view = S.prevView || "feed"; S.profileId = null; render(); break;
     case "mtog": S.mapClosed.has(id) ? S.mapClosed.delete(id) : S.mapClosed.add(id); saveMap(); S.mapFocus = id; render(); break;
     case "mexp": if (S.treeMode === "lungs") { S.lungClosed.clear(); store.set("lungClosed", []); } else { S.mapClosed.clear(); saveMap(); } render(); break;
-    case "mcol": if (S.treeMode === "lungs") { S.lungClosed = new Set(Object.values(S.tree.nodes).filter(n => n.t === "milestone" && (IDX[n.id] || []).length).map(n => n.id)); store.set("lungClosed", [...S.lungClosed]); } else collapseMap(); render(); break;
+    case "mcol": if (S.treeMode === "lungs") { S.lungClosed = new Set(Object.values(S.tree.nodes).filter(n => n.t === "project" && (IDX[n.id] || []).length).map(n => n.id)); store.set("lungClosed", [...S.lungClosed]); } else collapseMap(); render(); break;
     case "mgrid": { const o = ["plain", "lines", "dots"]; S.mapGrid = o[(o.indexOf(S.mapGrid) + 1) % 3]; store.set("mapGrid", S.mapGrid); toast("Background: " + S.mapGrid); render(); break; }
     case "ltog": S.lungClosed.has(id) ? S.lungClosed.delete(id) : S.lungClosed.add(id); store.set("lungClosed", [...S.lungClosed]); render(); break;
     case "mzoom": setZoom(S.mapZoom * (+v > 0 ? 1.25 : 0.8)); break;
@@ -1315,7 +1319,7 @@ document.addEventListener("click", async e => {
     case "tmode": S.treeMode = v; store.set("treeMode", v); render(); break;
     case "exp": S.expanded.has(id) ? S.expanded.delete(id) : S.expanded.add(id); saveExp(); render(); if (S.focusId) renderFocus(); break;
     case "expall": if (S.treeMode === "lungs") { S.lungClosed.clear(); store.set("lungClosed", []); render(); break; } if (S.treeMode === "map") { S.mapClosed.clear(); saveMap(); render(); break; } Object.keys(S.tree.nodes).forEach(k => S.expanded.add(k)); saveExp(); render(); break;
-    case "collapse": if (S.treeMode === "lungs") { S.lungClosed = new Set(Object.values(S.tree.nodes).filter(n => n.t === "milestone" && (IDX[n.id] || []).length).map(n => n.id)); store.set("lungClosed", [...S.lungClosed]); render(); break; } if (S.treeMode === "map") { collapseMap(); render(); break; } S.expanded.clear(); saveExp(); render(); break;
+    case "collapse": if (S.treeMode === "lungs") { S.lungClosed = new Set(Object.values(S.tree.nodes).filter(n => n.t === "project" && (IDX[n.id] || []).length).map(n => n.id)); store.set("lungClosed", [...S.lungClosed]); render(); break; } if (S.treeMode === "map") { collapseMap(); render(); break; } S.expanded.clear(); saveExp(); render(); break;
     case "arch": S.showArchived = el.checked; render(); break;
     case "tick": toggleNode(id); if (S.focusId) renderFocus(); break;
     case "add": if (!S.ready) return; nodeSheet(null, id || null); break;
@@ -1379,7 +1383,7 @@ async function doExport() {
   try { await S.downloads.save({ filename: `branchwork-backup-${today()}.json`, data }); } catch (e) { if (!e || e.code !== "declined") toast("Couldn't save the backup"); }
 }
 $("#importFile").addEventListener("change", async e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
-  try { const j = JSON.parse(await f.text()); if (!j.tree || typeof j.tree.nodes !== "object") throw 0; S.tree = { nodes: j.tree.nodes, bigHist: j.tree.bigHist || {} }; if (j.log) { S.log = { focusNode: j.log.focusNode || {}, focusDay: j.log.focusDay || {} }; logSaver.touch(); } commit(); toast("Backup restored"); }
+  try { const j = JSON.parse(await f.text()); if (!j.tree || typeof j.tree.nodes !== "object") throw 0; S.tree = { nodes: j.tree.nodes, bigHist: j.tree.bigHist || {} }; normalizeTypes(); if (j.log) { S.log = { focusNode: j.log.focusNode || {}, focusDay: j.log.focusDay || {} }; logSaver.touch(); } commit(); toast("Backup restored"); }
   catch { toast("That file isn't a Branchwork backup"); } });
 /* ---------- pinch zoom ---------- */
 function zoomInfo() { const svg = $(".mapwrap svg"); if (!svg) return null; const lungs = S.treeMode === "lungs";
