@@ -253,6 +253,21 @@ h1{font-size:1.7rem} h2{font-size:1.25rem} h3{font-size:1.02rem}
 .mapbox.full .mapwrap{max-height:none;height:100%;border:0;border-radius:0;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
 .mapbox.full .maptools{top:calc(10px + env(safe-area-inset-top,0px));right:calc(10px + env(safe-area-inset-right,0px))}
 .mtog{cursor:pointer}
+.grip{width:18px;height:30px;display:grid;place-items:center;color:var(--muted);flex:none;cursor:grab;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;opacity:.75;margin-right:-4px}
+.grip svg{width:14px;height:14px}
+.dimmed{opacity:.3}
+.row.dropin,.dom-head.dropin{outline:2px solid var(--accent);outline-offset:-2px;background:color-mix(in srgb,var(--accent) 14%,var(--surface))}
+.mnode.dropin rect.box{stroke:var(--accent);stroke-width:3.5px;fill:color-mix(in srgb,var(--accent) 16%,var(--bg))}
+#dropline{position:fixed;height:3px;background:var(--accent);border-radius:2px;z-index:95;pointer-events:none;box-shadow:0 0 0 2px var(--surface)}
+#dragghost{position:fixed;left:0;top:0;z-index:96;pointer-events:none;background:var(--surface);border:2px solid var(--accent);border-radius:12px;padding:8px 12px;box-shadow:var(--shadow);max-width:250px;display:flex;flex-direction:column;gap:2px}
+#dragghost[hidden]{display:none}
+#dragghost b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#dragghost small{color:var(--muted);font-size:.75rem}
+#dragghost.bad{border-color:var(--danger)}
+#dragghost.bad small{color:var(--danger)}
+body.dragging{-webkit-user-select:none;user-select:none;cursor:grabbing}
+.mapwrap svg{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.toast button{margin-left:14px;color:inherit;font-weight:700;text-decoration:underline;font-size:inherit}
 .mapbox .mapwrap{padding-top:52px;touch-action:pan-x pan-y}
 .mapwrap svg{transition:none}
 .mapbox.full .mapwrap{padding-top:calc(60px + env(safe-area-inset-top,0px))}
@@ -350,6 +365,8 @@ h1{font-size:1.7rem} h2{font-size:1.25rem} h3{font-size:1.02rem}
 <input type="file" id="coverFile" accept="image/*" hidden>
 <div id="sheet" hidden></div>
 <div id="toast" class="toast" hidden></div>
+<div id="dragghost" hidden></div>
+<div id="dropline" hidden></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 <input type="file" id="mediaFile" accept="image/*,video/*" multiple hidden>
 
@@ -386,6 +403,7 @@ const IC = {
   img:'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>',
   share:'<path d="M12 3v13M7 8l5-5 5 5M5 14v6h14v-6"/>', down:'<path d="M12 3v13M7 11l5 5 5-5M5 21h14"/>', up:'<path d="M12 21V8M7 13l5-5 5 5M5 3h14"/>',
   map:'<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h10M7 12c5 0 5-7 10-7M7 12c5 0 5 7 10 7"/>',
+  grip:'<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
   list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
@@ -405,7 +423,9 @@ const IC = {
   trophy:'<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4"/>'
 };
 const ic = (n, fill) => `<svg viewBox="0 0 24 24" fill="${fill ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, 2600); }
+let UNDO = null;
+function toast(msg, undo) { const t = $("#toast"); UNDO = undo || null; t.textContent = msg; if (undo) { const b = document.createElement("button"); b.dataset.act = "undo"; b.textContent = "Undo"; t.appendChild(b); }
+  t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => { t.hidden = true; UNDO = null; }, undo ? 6000 : 2600); }
 function ring(p, size = 34, color = "var(--accent)", label = true) {
   const r = size / 2 - 3.5, c = 2 * Math.PI * r, v = Math.max(0, Math.min(1, p));
   return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-label="${Math.round(v * 100)}% complete" role="img">
@@ -598,6 +618,7 @@ function rowHTML(n, depth, opts = {}) {
   const bk = checkable(n) ? bigRank(n.id) : 0;
   const inside = !open && bigInside(n.id);
   let h = `<div class="row${dn ? " done" : ""}${bk ? " big" : ""}" data-row="${n.id}" style="--depth:${depth}">
+    <span class="grip" data-grip="${n.id}" title="Hold and slide to move">${ic("grip", true)}</span>
     <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show children" data-act="exp" data-id="${n.id}">${ic("chev")}</button>
     ${cb}
     <div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b>${n.desc ? `<small>${esc(n.desc.split("\n")[0])}</small>` : ""}
@@ -609,7 +630,8 @@ function rowHTML(n, depth, opts = {}) {
 }
 function domainBlock(d, opts = {}) {
   const p = prog(d); const ks = kids(d.id); const open = S.expanded.has(d.id) || opts.allOpen;
-  let h = `<section class="dom" style="--dc:var(--d${d.color || 1})">${d.cover && d.cover.url ? `<img class="cover" src="${esc(d.cover.url)}" alt="" loading="lazy">` : ""}<div class="dom-head">
+  let h = `<section class="dom" style="--dc:var(--d${d.color || 1})">${d.cover && d.cover.url ? `<img class="cover" src="${esc(d.cover.url)}" alt="" loading="lazy">` : ""}<div class="dom-head" data-row="${d.id}">
+    <span class="grip" data-grip="${d.id}" title="Hold and slide to move">${ic("grip", true)}</span>
     <button class="chev${ks.length ? "" : " blank"}" aria-expanded="${open}" aria-label="Show projects" data-act="exp" data-id="${d.id}">${ic("chev")}</button>
     <span class="ringwrap">${ring(p, 44, `var(--d${d.color || 1})`, false)}<span class="ri">${ic(d.icon || "leaf")}</span></span>
     <div class="t" data-act="edit" data-id="${d.id}">${esc(d.title)} ${d.ex ? `<span class="chip ex">Example</span>` : ""}${!open && bigInside(d.id) ? `<span class="chip bigin">${ic("star", true)}Big 2 inside</span>` : ""}<div class="muted" style="font-family:var(--f-body);font-weight:400;font-size:.82rem"><span class="mono">${Math.round(p * 100)}%</span> · ${ks.length} project${ks.length === 1 ? "" : "s"}${d.desc ? " · " + esc(d.desc.split("\n")[0]) : ""}</div></div>
@@ -654,7 +676,7 @@ function viewMap(ds) {
         <rect x="${x + W + 4}" y="${cy + H/2 - 11}" width="${w}" height="22" rx="11" fill="var(--surface)" stroke="${dcolor(n)}" stroke-width="1.5"/>
         <text x="${x + W + 4 + w/2}" y="${cy + H/2}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:${closed ? 11 : 15}px;font-weight:700;fill:${dcolor(n)}">${lab}</text></g>`; }
     const bk = checkable(n) ? bigRank(n.id) : 0;
-    return `<g class="mnode" data-act="edit" data-id="${n.id}" tabindex="0" role="button" aria-label="${esc(n.title)}, ${Math.round(p*100)}%${bk ? ", Big 2 number " + bk : ""}">${bk ? `<rect x="${x - 4}" y="${cy - 4}" width="${W + 8}" height="${H + 8}" rx="12" fill="none" stroke="var(--accent)" stroke-width="3"/><circle cx="${x + 2}" cy="${cy + 2}" r="10" fill="var(--accent)"/><text x="${x + 2}" y="${cy + 2.5}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:11px;font-weight:700;fill:var(--accent-ink)">${bk}</text>` : ""}<rect x="${x}" y="${cy}" width="${W}" height="${H}" rx="9" fill="var(--bg)" stroke="${dcolor(n)}" stroke-width="${depth ? 1.2 : 2}"/>
+    return `<g class="mnode" data-act="edit" data-id="${n.id}" tabindex="0" role="button" aria-label="${esc(n.title)}, ${Math.round(p*100)}%${bk ? ", Big 2 number " + bk : ""}">${bk ? `<rect x="${x - 4}" y="${cy - 4}" width="${W + 8}" height="${H + 8}" rx="12" fill="none" stroke="var(--accent)" stroke-width="3"/><circle cx="${x + 2}" cy="${cy + 2}" r="10" fill="var(--accent)"/><text x="${x + 2}" y="${cy + 2.5}" text-anchor="middle" dominant-baseline="central" style="font-family:var(--f-mono);font-size:11px;font-weight:700;fill:var(--accent-ink)">${bk}</text>` : ""}<rect class="box" x="${x}" y="${cy}" width="${W}" height="${H}" rx="9" fill="var(--bg)" stroke="${dcolor(n)}" stroke-width="${depth ? 1.2 : 2}"/>
       <rect x="${x}" y="${cy + H - 4}" width="${W * p}" height="4" rx="2" fill="${dcolor(n)}"/>
       <text x="${x + 10}" y="${cy + H/2 - 1}" dominant-baseline="central" style="font-weight:${depth ? 500 : 700}">${esc(t)}</text>
       <text x="${x + W - 8}" y="${cy + H/2 - 1}" text-anchor="end" dominant-baseline="central" style="font-family:var(--f-mono);font-size:10px;fill:var(--muted)">${Math.round(p * 100)}%</text></g>${tog}`; }).join("");
@@ -664,7 +686,7 @@ function viewMap(ds) {
     ${bgBtn()}
     <button class="icon-btn" data-act="mfull" aria-label="${S.mapFull ? "Exit full screen" : "Full screen"}" title="${S.mapFull ? "Exit full screen" : "Full screen"}">${ic(S.mapFull ? "shrink" : "full")}</button></div>
     <div class="mapwrap${bgClass()}"><svg width="${Math.round((width + 30) * S.mapZoom)}" height="${Math.round((height + 20) * S.mapZoom)}" viewBox="-10 -10 ${width + 30} ${height + 20}" role="img" aria-label="Mind map of your branches">${lk}${nd}</svg></div></div>
-    <p class="muted" style="margin:0;font-size:.85rem">Tap − to fold a branch and + to open it. Tap a box to edit it. Pinch to zoom.</p>`;
+    <p class="muted" style="margin:0;font-size:.85rem">Tap − to fold a branch and + to open it. Tap a box to edit it. Hold a box, then slide, to move it. Pinch to zoom.</p>`;
 }
 
 /* ---------- view: today ---------- */
@@ -1319,6 +1341,7 @@ document.addEventListener("click", async e => {
     case "carryno": store.set("carryNo", today()); render(); break;
     case "mfull": S.mapFull = !S.mapFull; render(); break;
     case "settings": settingsSheet(); break;
+    case "undo": { const f = UNDO; UNDO = null; $("#toast").hidden = true; if (f) f(); break; }
     case "install": if (window.BW_INSTALL) { window.BW_INSTALL.prompt(); window.BW_INSTALL.userChoice.finally(() => { window.BW_INSTALL = null; closeSheet(); }); } break;
     case "setmode": S.mode = v; store.set("mode", v); applyTheme(); settingsSheet(); break;
     case "setacc": S.accent = v; store.set("accent", v); applyTheme(); settingsSheet(); break;
@@ -1412,7 +1435,7 @@ function setZoom(z, mx, my) {
   render(); const m2 = $(".mapwrap"); if (m2) { m2.scrollLeft = Math.max(0, sl); m2.scrollTop = Math.max(0, st); }
 }
 let PZ = null, WZ = null;
-document.addEventListener("touchstart", e => { if (e.touches.length !== 2) return; const mw = e.target.closest && e.target.closest(".mapwrap"); if (!mw) return; const zi = zoomInfo(); if (!zi) return;
+document.addEventListener("touchstart", e => { if (e.touches.length !== 2) return; endHold(); const mw = e.target.closest && e.target.closest(".mapwrap"); if (!mw) return; const zi = zoomInfo(); if (!zi) return;
   const [a, b] = e.touches; PZ = { d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1, mx: (a.clientX + b.clientX) / 2, my: (a.clientY + b.clientY) / 2, cur: zi.cur, svg: zi.svg, ratio: 1 };
   const r = zi.svg.getBoundingClientRect(); zi.svg.style.transformOrigin = `${PZ.mx - r.left}px ${PZ.my - r.top}px`; }, { passive: true });
 document.addEventListener("touchmove", e => { if (!PZ || e.touches.length !== 2) return; e.preventDefault(); const [a, b] = e.touches;
@@ -1423,7 +1446,86 @@ document.addEventListener("gesturestart", e => { if (e.target.closest && e.targe
 document.addEventListener("wheel", e => { if (!e.ctrlKey) return; const mw = e.target.closest && e.target.closest(".mapwrap"); if (!mw) return; e.preventDefault();
   if (!WZ) { const zi = zoomInfo(); if (!zi) return; WZ = { f: 1, cur: zi.cur, mx: e.clientX, my: e.clientY }; }
   WZ.f *= Math.exp(-e.deltaY * 0.01); clearTimeout(WZ.t); WZ.t = setTimeout(() => { const w = WZ; WZ = null; setZoom(w.cur * w.f, w.mx, w.my); }, 140); }, { passive: false });
-function afterRender() { watchChat(); watchComments(); watchProfile(); checkAchievements(); }
+/* ---------- drag and drop (list + map) ---------- */
+let DRAG = null, HOLD = null, SUPPRESS = 0;
+function syncDone(pid) { let p = node(pid); reindex(); while (p && checkable(p)) { const ks = liveKids(p.id); if (ks.length) setDone(p, ks.every(k => isDone(k))); reindex(); p = node(p.p); } }
+function moveTo(id, parentId, beforeId) {
+  const n = node(id); if (!n) return; const oldP = n.p || null; parentId = parentId || null;
+  const prev = JSON.stringify(S.tree.nodes); const oldOrder = kids(oldP, true).map(k => k.id).join();
+  n.p = parentId; reindex();
+  const sib = kids(parentId, true).filter(k => k.id !== id); let i = beforeId ? sib.findIndex(k => k.id === beforeId) : sib.length; if (i < 0) i = sib.length;
+  sib.splice(i, 0, n); if (oldP === parentId && sib.map(k => k.id).join() === oldOrder) { n.p = oldP; reindex(); render(); return; }
+  sib.forEach((k, j) => k.order = j + 1); if (oldP !== parentId) kids(oldP, true).filter(k => k.id !== id).forEach((k, j) => k.order = j + 1);
+  syncDone(oldP); syncDone(parentId);
+  if (parentId) { const pn = node(parentId); [pn, ...ancestors(pn)].forEach(a => { S.expanded.add(a.id); S.mapClosed.delete(a.id); }); saveExp(); saveMap(); }
+  S.mapFocus = id; commit(); if (S.focusId) renderFocus();
+  toast(oldP === parentId ? `Moved ${n.title}` : `Moved into ${parentId ? node(parentId).title : "top level"}`, () => { S.tree.nodes = JSON.parse(prev); commit(); if (S.focusId) renderFocus(); toast("Move undone"); });
+}
+function markDragged() { if (!DRAG) return; DRAG.set.forEach(i => document.querySelectorAll(`.row[data-row="${i}"],.dom-head[data-row="${i}"],.mnode[data-id="${i}"]`).forEach(el => el.classList.add("dimmed"))); }
+function startDrag(id, kind, x, y) {
+  const n = node(id); if (!n) return; DRAG = { id, kind, x, y, set: new Set([id, ...descendants(id).map(d => d.id)]), res: null, hoverId: null, hoverT: 0, inEl: null };
+  try { navigator.vibrate && navigator.vibrate(15); } catch {}
+  const g = $("#dragghost"); g.hidden = false; document.body.classList.add("dragging"); markDragged(); dragMove(x, y);
+  const loop = () => { if (!DRAG) return; const { x: px, y: py } = DRAG; let moved = false;
+    if (DRAG.kind === "map") { const mw = $(".mapwrap"); if (mw) { const r = mw.getBoundingClientRect(); const e2 = 46, sp = 12;
+      if (px < r.left + e2) { mw.scrollLeft -= sp; moved = true; } else if (px > r.right - e2) { mw.scrollLeft += sp; moved = true; }
+      if (py < r.top + e2) { mw.scrollTop -= sp; moved = true; } else if (py > r.bottom - e2) { mw.scrollTop += sp; moved = true; } } }
+    if (py < 80) { window.scrollBy(0, -10); moved = true; } else if (py > innerHeight - 110) { window.scrollBy(0, 10); moved = true; }
+    const fo = $("#focus"); if (S.focusId && fo) { if (py < 80) fo.scrollTop -= 10; else if (py > innerHeight - 110) fo.scrollTop += 10; }
+    if (moved) dragMove(px, py); DRAG && (DRAG.raf = requestAnimationFrame(loop)); };
+  DRAG.raf = requestAnimationFrame(loop);
+}
+function dragMove(x, y) {
+  DRAG.x = x; DRAG.y = y; const g = $("#dragghost"), line = $("#dropline"), dn = node(DRAG.id);
+  g.style.transform = `translate(${Math.max(8, Math.min(x - 120, innerWidth - 262))}px, ${Math.max(8, y - 110)}px)`;
+  const el = document.elementFromPoint(x, y); let t = null;
+  if (DRAG.kind === "list") { const r = el && el.closest("[data-row]"); if (r) t = { id: r.dataset.row, el: r }; }
+  else { const m = el && el.closest(".mnode"); if (m && !m.closest(".lungwrap")) t = { id: m.dataset.id, el: m.querySelector("rect.box") || m, hl: m }; }
+  let res = null;
+  if (t && !DRAG.set.has(t.id) && node(t.id)) { const tn = node(t.id); const lt = TYPES.indexOf(tn.t), ld = TYPES.indexOf(dn.t); const rc = t.el.getBoundingClientRect();
+    if (lt === ld - 1) res = { mode: "inside", id: t.id, rc, hl: t.hl || t.el }; else if (lt === ld) res = { mode: y < rc.top + rc.height / 2 ? "before" : "after", id: t.id, rc }; else res = { mode: "bad", id: t.id }; }
+  DRAG.res = res; if (DRAG.inEl) { DRAG.inEl.classList.remove("dropin"); DRAG.inEl = null; }
+  const parentLabel = LABEL[TYPES[TYPES.indexOf(dn.t) - 1]];
+  let sub = dn.t === "domain" ? "Slide to reorder" : `Drop between ${LABEL[dn.t].toLowerCase()}s, or onto a ${(parentLabel || "").toLowerCase()}`;
+  g.classList.remove("bad"); line.hidden = true;
+  if (res && res.mode === "bad") { g.classList.add("bad"); sub = dn.t === "domain" ? "Domains can only be reordered" : `A ${LABEL[dn.t].toLowerCase()} goes inside a ${parentLabel.toLowerCase()}`; }
+  else if (res && res.mode === "inside") { res.hl.classList.add("dropin"); DRAG.inEl = res.hl; sub = "Move into " + node(res.id).title; }
+  else if (res) { line.hidden = false; line.style.left = res.rc.left + "px"; line.style.width = res.rc.width + "px"; line.style.top = (res.mode === "before" ? res.rc.top - 2 : res.rc.bottom - 1) + "px"; sub = (res.mode === "before" ? "Above " : "Below ") + node(res.id).title; }
+  g.innerHTML = `<b>${esc(dn.title)}</b><small>${esc(sub)}</small>`;
+  if (res && res.mode === "inside") { const tn = node(res.id); const folded = DRAG.kind === "list" ? !S.expanded.has(tn.id) : S.mapClosed.has(tn.id);
+    if (DRAG.hoverId !== res.id) { DRAG.hoverId = res.id; DRAG.hoverT = Date.now(); }
+    else if (folded && (IDX[tn.id] || []).length && Date.now() - DRAG.hoverT > 750) { DRAG.hoverT = Infinity; if (DRAG.kind === "list") { S.expanded.add(tn.id); saveExp(); } else { S.mapClosed.delete(tn.id); saveMap(); } render(); if (S.focusId) renderFocus(); markDragged(); } }
+  else DRAG.hoverId = null;
+}
+function dragEnd(ok) {
+  const d = DRAG; DRAG = null; cancelAnimationFrame(d.raf); SUPPRESS = Date.now();
+  $("#dragghost").hidden = true; $("#dropline").hidden = true; document.body.classList.remove("dragging"); if (d.inEl) d.inEl.classList.remove("dropin");
+  document.querySelectorAll(".dimmed").forEach(el => el.classList.remove("dimmed"));
+  const r = d.res; if (!ok || !r || r.mode === "bad") return;
+  const tn = node(r.id); if (!tn) return;
+  if (r.mode === "inside") moveTo(d.id, tn.id, null);
+  else if (r.mode === "before") moveTo(d.id, tn.p, tn.id);
+  else { const sib = kids(tn.p, true).filter(k => k.id !== d.id); const nx = sib[sib.indexOf(tn) + 1]; moveTo(d.id, tn.p, nx ? nx.id : null); }
+}
+function endHold() { if (HOLD) { clearTimeout(HOLD.t); HOLD = null; } }
+document.addEventListener("pointerdown", e => {
+  if (!e.isPrimary) { endHold(); return; } if (e.button > 0 || DRAG) return;
+  const grip = e.target.closest && e.target.closest("[data-grip]"); const mn = !grip && e.target.closest && e.target.closest(".mapwrap:not(.lungwrap) .mnode");
+  if (!grip && !mn) return; const id = grip ? grip.dataset.grip : mn.dataset.id; const kind = grip ? "list" : "map";
+  if (grip) { e.preventDefault(); try { grip.setPointerCapture(e.pointerId); } catch {} }
+  HOLD = { id, kind, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY };
+  HOLD.t = setTimeout(() => { if (HOLD) { const h = HOLD; HOLD = null; startDrag(h.id, h.kind, h.x, h.y); } }, grip ? 200 : 450);
+});
+document.addEventListener("pointermove", e => {
+  if (HOLD) { HOLD.x = e.clientX; HOLD.y = e.clientY; if (Math.hypot(e.clientX - HOLD.x0, e.clientY - HOLD.y0) > 8) { const h = HOLD; endHold(); if (h.kind === "list") startDrag(h.id, "list", e.clientX, e.clientY); } }
+  if (DRAG) { e.preventDefault(); dragMove(e.clientX, e.clientY); }
+}, { passive: false });
+document.addEventListener("pointerup", () => { endHold(); if (DRAG) dragEnd(true); });
+document.addEventListener("pointercancel", () => { endHold(); if (DRAG) dragEnd(false); });
+document.addEventListener("touchmove", e => { if (DRAG) e.preventDefault(); }, { passive: false });
+document.addEventListener("click", e => { if (Date.now() - SUPPRESS < 450) { e.stopPropagation(); e.preventDefault(); } }, true);
+document.addEventListener("contextmenu", e => { if (DRAG || HOLD || (e.target.closest && (e.target.closest(".mapwrap") || e.target.closest("[data-grip]")))) e.preventDefault(); });
+function afterRender() { watchChat(); watchComments(); watchProfile(); checkAchievements(); markDragged(); }
 $("#coverFile").addEventListener("change", async e => { const f = e.target.files[0]; e.target.value = ""; if (!f || !S.assets) return;
   const pv = $("#coverprev"); if (pv) pv.innerHTML = `<span class="muted">Uploading…</span>`;
   try { const r = await S.assets.upload(f); SH.cover = { id: r.id, url: r.url }; } catch { toast("Couldn't upload that photo"); }
