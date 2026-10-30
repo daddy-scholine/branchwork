@@ -1135,7 +1135,7 @@ function applyTheme() {
   $("#themeStyle").textContent = `:root{--accent:${t.l};${tl}} @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--accent:${t.d};${td}}} :root[data-theme="dark"]{--accent:${t.d};${td}}`;
 }
 function installHTML() {
-  if (window.matchMedia && matchMedia("(display-mode: standalone)").matches) return `<p class="muted" style="margin:0;font-size:.85rem">Branchwork is installed on this device. Your data is saved on this device; use Back up in the Tree tab to keep a copy.</p>`;
+  if (window.matchMedia && matchMedia("(display-mode: standalone)").matches) return `<p class="muted" style="margin:0;font-size:.85rem">Branchwork is installed on this device. ${window.BW_FIRE ? "Your data syncs to your account and works offline." : "Your data is saved on this device; use Back up in the Tree tab to keep a copy."}</p>`;
   if (window.BW_INSTALL) return `<button type="button" class="btn primary" data-act="install">${ic("down")}Install Branchwork on this device</button>`;
   return `<p class="muted" style="margin:0;font-size:.85rem">To install: in Chrome, tap ⋮ then <b>Install app</b> or <b>Add to Home screen</b>. On iPad or iPhone, open in Safari, tap Share, then <b>Add to Home Screen</b>.</p>`;
 }
@@ -1145,7 +1145,7 @@ function settingsSheet() {
    <div class="field"><span class="lbl">Appearance</span><div class="seg" role="group" aria-label="Appearance">${[["system", "Match my device"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-act="setmode" data-v="${k}" aria-pressed="${S.mode === k}">${l}</button>`).join("")}</div></div>
    <div class="field"><span class="lbl">Colour theme</span><div class="themes">${THEMES.map(t => { const lock = sx.level < t.lv; return `<button type="button" class="thm" data-act="setacc" data-v="${t.id}" aria-pressed="${S.accent === t.id}" ${lock ? "disabled" : ""}><span class="sw" style="--c:var(--t-${t.id})"></span><span>${t.name}</span><small>${lock ? "Level " + t.lv : ""}</small></button>`; }).join("")}</div>
      <span class="muted" style="font-size:.8rem">Level up to unlock more themes. You're level ${sx.level}.</span></div>
-   <label class="check"><input type="checkbox" id="sndchk" data-act="setsnd" ${S.sound ? "checked" : ""}> Play a sound when I finish something</label>${LOCAL ? installHTML() : ""}`);
+   <label class="check"><input type="checkbox" id="sndchk" data-act="setsnd" ${S.sound ? "checked" : ""}> Play a sound when I finish something</label>${window.BW_ACCOUNT ? window.BW_ACCOUNT() : ""}${LOCAL || window.BW_FIRE ? installHTML() : ""}`);
 }
 let profUnsub = null, profFor = null;
 function watchProfile() {
