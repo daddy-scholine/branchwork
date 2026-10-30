@@ -860,14 +860,14 @@ function battleDetail(b) {
   <div class="card"><h2 style="margin-bottom:14px">Leaderboard</h2><div class="lb">${lb || `<p class="muted" style="margin:0">No members yet.</p>`}</div></div>
   ${st.mine ? `<div class="card"><h3>Your linked tasks · ${linked.length}</h3><p class="muted" style="margin:4px 0 10px;font-size:.85rem">Each linked task or daily habit you finish between the start and end counts as 1 ${esc(b.unit)}. Link tasks from a task's edit screen.</p>
     ${linked.length ? `<div class="group">${linked.map(n => `<div class="trow"><button class="cb" role="checkbox" aria-checked="${isDone(n)}" aria-label="Mark ${esc(n.title)} done" data-act="tick" data-id="${n.id}">${ic("check")}</button><div class="rt" data-act="edit" data-id="${n.id}"><b>${esc(n.title)}</b><small>${esc(ancestors(n).map(a => a.title).join(" › "))}</small></div></div>`).join("")}</div>` : `<button class="btn small" data-act="nav" data-v="tree">Pick tasks in your tree</button>`}</div>` : ""}
-  <div class="card"><h3 style="margin-bottom:10px">Battle chat</h3><div class="chat" id="chatbox">${S.chat.length ? S.chat.map(m => `<div class="msg${m.uid === S.uid ? " me" : ""}">${avatar(m.uid, true)}<div class="bub"><b style="font-size:.78rem">${esc(pname(m.uid))}</b><br>${esc(m.text)}</div></div>`).join("") : `<p class="muted" style="margin:0">No messages yet. Say something to push each other.</p>`}</div>
+  <div class="card"><h3 style="margin-bottom:10px">Battle chat</h3><div class="chat" id="chatbox">${!st.mine ? `<p class="muted" style="margin:0">Join the battle to see and send messages.</p>` : S.chat.length ? S.chat.map(m => `<div class="msg${m.uid === S.uid ? " me" : ""}">${avatar(m.uid, true)}<div class="bub"><b style="font-size:.78rem">${esc(pname(m.uid))}</b><br>${esc(m.text)}</div></div>`).join("") : `<p class="muted" style="margin:0">No messages yet. Say something to push each other.</p>`}</div>
    ${st.mine ? `<form id="chatform" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input class="inp" id="chatin" maxlength="300" placeholder="Message" style="flex:1;min-width:0"><button class="btn primary">Send</button></form>
    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${["🔥 On fire", "💪 Keep going", "😤 Catching up", "👏 Nice one"].map(r => `<button class="btn small" data-act="react" data-v="${r}">${r}</button>`).join("")}</div>` : ""}</div>
   ${b.creator === S.uid ? `<div><button class="btn small danger" data-act="bdel" data-id="${b.id}">Delete battle</button></div>` : ""}`;
 }
 let chatUnsub = null, chatFor = null;
 function watchChat() {
-  const want = S.view === "battles" && S.battleId && S.db ? S.battleId : null;
+  const bb = S.battles.find(x => x.id === S.battleId); const want = S.view === "battles" && S.battleId && S.db && bb && (bb.members || {})[S.uid] ? S.battleId : null;
   if (want === chatFor) return; if (chatUnsub) chatUnsub(); chatUnsub = null; chatFor = want; S.chat = [];
   if (!want) return;
   chatUnsub = S.db.collection("battles/" + want + "/chat").orderBy("at", "desc").limit(60).onSnapshot(s => { S.chat = s.docs.map(d => d.data()).reverse(); ensureProfiles(S.chat.map(m => m.uid)); if (S.view === "battles") { render(); const cb = $("#chatbox"); if (cb) cb.scrollTop = cb.scrollHeight; } });

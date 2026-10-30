@@ -3,13 +3,12 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function me() { return request.auth.uid; }
+    // true when, between two maps, only the signed-in user's own key changed
+    function ownOnly(after, before) { return after.diff(before).affectedKeys().hasOnly([me()]); }
 
-    // Each person's own tree, log and follows: only they can read or write.
     match /data/users/{uid}/{rest=**} {
       allow read, write: if signedIn() && me() == uid;
     }
-
-    // Public name/photo and stats (level, badges, streak).
     match /users/{uid} {
       allow read: if signedIn();
       allow write: if signedIn() && me() == uid;
@@ -19,13 +18,18 @@ service cloud.firestore {
       allow write: if signedIn() && me() == uid;
     }
 
-    // Feed
     match /posts/{pid} {
       allow read: if signedIn();
       allow create: if signedIn() && request.resource.data.uid == me();
       allow delete: if signedIn() && resource.data.uid == me();
-      allow update: if signedIn() && (resource.data.uid == me()
-        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'reacts']));
+      allow update: if signedIn() && (
+        (resource.data.uid == me() && request.resource.data.uid == resource.data.uid)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'reacts'])
+            && ownOnly(request.resource.data.get('likes', {}), resource.data.get('likes', {}))
+            && request.resource.data.get('reacts', {}).keys().hasOnly(['fire', 'clap', 'muscle'])
+            && ownOnly(request.resource.data.get('reacts', {}).get('fire', {}), resource.data.get('reacts', {}).get('fire', {}))
+            && ownOnly(request.resource.data.get('reacts', {}).get('clap', {}), resource.data.get('reacts', {}).get('clap', {}))
+            && ownOnly(request.resource.data.get('reacts', {}).get('muscle', {}), resource.data.get('reacts', {}).get('muscle', {}))));
       match /comments/{cid} {
         allow read: if signedIn();
         allow create: if signedIn() && request.resource.data.uid == me();
@@ -33,17 +37,18 @@ service cloud.firestore {
       }
     }
 
-    // Battles: anyone signed in can join; each person only changes their own score.
     match /battles/{bid} {
       allow read: if signedIn();
       allow create: if signedIn() && request.resource.data.creator == me();
       allow delete: if signedIn() && resource.data.creator == me();
-      allow update: if signedIn() && (resource.data.creator == me()
+      allow update: if signedIn() && (
+        (resource.data.creator == me() && request.resource.data.creator == resource.data.creator)
         || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
-            && request.resource.data.members.diff(resource.data.members).affectedKeys().hasOnly([me()])));
+            && ownOnly(request.resource.data.members, resource.data.members)));
       match /chat/{mid} {
-        allow read: if signedIn();
-        allow create: if signedIn() && request.resource.data.uid == me();
+        function isMember() { return me() in get(/databases/$(database)/documents/battles/$(bid)).data.members; }
+        allow read: if signedIn() && isMember();
+        allow create: if signedIn() && request.resource.data.uid == me() && isMember();
       }
     }
   }
